@@ -3,10 +3,10 @@ from typing import Annotated, cast
 
 import httpx
 from fastapi import Depends, Request
-from modules.ai_runtime.retriever import KnowledgeRetriever
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.config.settings import Settings
+from modules.ai_runtime.retriever import KnowledgeRetriever
 from modules.ai_runtime.service import ChatService
 from modules.conversations.repository import ConversationRepository
 from modules.knowledge.extractors import DocumentExtractor
@@ -16,6 +16,7 @@ from modules.model_gateway.embeddings import (
     OpenAICompatibleEmbeddingProvider,
 )
 from modules.model_gateway.openai_compatible import OpenAICompatibleProvider
+from modules.tools.builtins import build_default_tool_registry
 
 
 async def get_db_session(request: Request) -> AsyncIterator[AsyncSession]:
@@ -65,7 +66,7 @@ def get_chat_service(
     session: Annotated[AsyncSession, Depends(get_db_session)],
     embeddings: Annotated[EmbeddingProvider, Depends(get_embedding_provider)],
 ) -> ChatService:
-    """Build a ChatService wired to the LLM provider, conversation repo, and RAG retriever."""
+    """Build a ChatService wired to LLM provider, RAG retriever, and tool registry."""
     settings = cast(Settings, request.app.state.settings)
     http_client = cast(httpx.AsyncClient | None, getattr(request.app.state, "http_client", None))
 
@@ -80,4 +81,13 @@ def get_chat_service(
     repository = ConversationRepository(session=session)
     knowledge_repo = KnowledgeRepository(session=session, embedding_provider=embeddings)
     retriever = KnowledgeRetriever(knowledge_repo=knowledge_repo, llm_provider=provider)
-    return ChatService(provider=provider, repository=repository, retriever=retriever)
+    tool_registry = build_default_tool_registry(
+        conversation_repo=repository,
+        knowledge_repo=knowledge_repo,
+    )
+    return ChatService(
+        provider=provider,
+        repository=repository,
+        retriever=retriever,
+        tool_registry=tool_registry,
+    )

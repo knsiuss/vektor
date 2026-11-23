@@ -1,15 +1,27 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class ChatMessage(BaseModel):
-    """Single conversational turn sent to an upstream LLM provider."""
+class ModelToolCall(BaseModel):
+    """Normalized tool/function invocation requested by an upstream LLM."""
 
     model_config = ConfigDict(frozen=True)
 
-    role: Literal["system", "user", "assistant"]
-    content: str = Field(min_length=1)
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    arguments: str = "{}"
+
+
+class ChatMessage(BaseModel):
+    """Single conversational or tool turn sent to an upstream LLM provider."""
+
+    model_config = ConfigDict(frozen=True)
+
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str = ""
+    tool_call_id: str | None = None
+    tool_calls: list[ModelToolCall] | None = None
 
 
 class ModelRequest(BaseModel):
@@ -21,6 +33,7 @@ class ModelRequest(BaseModel):
     model: str | None = Field(default=None, min_length=1)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int | None = Field(default=None, ge=1)
+    tools: list[dict[str, Any]] | None = None
 
 
 class TokenUsage(BaseModel):
@@ -43,6 +56,7 @@ class ModelResponse(BaseModel):
     model: str = Field(min_length=1)
     usage: TokenUsage = Field(default_factory=TokenUsage)
     finish_reason: str | None = None
+    tool_calls: list[ModelToolCall] = Field(default_factory=list)
 
 
 class StreamChunk(BaseModel):

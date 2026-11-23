@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from modules.knowledge.schemas import RetrievedChunk
 from modules.model_gateway.schemas import TokenUsage
+from modules.tools.schemas import ToolExecutionRecord
 
 
 class ChatTurnInput(BaseModel):
@@ -17,6 +18,8 @@ class ChatTurnInput(BaseModel):
     retrieval_mode: Literal["auto", "always", "explicit", "off"] = "auto"
     document_ids: list[str] | None = None
     top_k: int = Field(default=4, ge=1, le=10)
+    enable_tools: bool = True
+    allow_mutating_tools: bool = False
 
 
 class ChatTurnResult(BaseModel):
@@ -30,6 +33,7 @@ class ChatTurnResult(BaseModel):
     model: str = Field(min_length=1)
     usage: TokenUsage
     citations: list[RetrievedChunk] = Field(default_factory=list)
+    tool_calls: list[ToolExecutionRecord] = Field(default_factory=list)
 
 
 class ChatStreamEvent(BaseModel):

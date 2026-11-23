@@ -12,13 +12,16 @@ from modules.conversations.repository import (
 from modules.knowledge.schemas import RetrievedChunk
 from modules.model_gateway.base import LLMProvider
 from modules.model_gateway.exceptions import ModelGatewayError
-from modules.model_gateway.schemas import ChatMessage, ModelRequest, TokenUsage
+from modules.model_gateway.schemas import ChatMessage, ModelRequest, ModelResponse, TokenUsage
+from modules.tools.registry import ToolRegistry
+from modules.tools.schemas import ToolExecutionRecord
 
 _MAX_HISTORY_MESSAGES = 20
+_MAX_TOOL_ITERATIONS = 3
 
 
 class ChatService:
-    """Orchestrates single and multi-turn chat execution with RAG and persistence."""
+    """Orchestrates multi-turn chat with hybrid RAG, bounded tool calls, and persistence."""
 
     def __init__(
         self,
@@ -26,25 +29,29 @@ class ChatService:
         repository: ConversationRepository,
         *,
         retriever: KnowledgeRetriever | None = None,
+        tool_registry: ToolRegistry | None = None,
         system_prompt: str | None = None,
     ) -> None:
         self._provider = provider
         self._repository = repository
         self._retriever = retriever
+        self._tools = tool_registry
         self._system_prompt = system_prompt or load_prompt("system_default.md")
 
     async def execute_turn(self, turn_input: ChatTurnInput) -> ChatTurnResult:
-        """Retrieve relevant knowledge, call the LLM provider, and persist the turn."""
+        """Retrieve knowledge, run bounded tool loop, and persist the completed turn."""
         conversation = await self._resolve_conversation(turn_input)
         citations = await self._retrieve_context(turn_input)
-        history_messages = self._build_model_messages(
+        working_messages = self._build_model_messages(
             conversation,
             turn_input.message,
             citations=citations,
         )
 
-        request = ModelRequest(messages=history_messages, model=turn_input.model)
-        response = await self._provider.generate(request)
+        response, tool_records, total_usage = await self._run_with_tools(
+            working_messages,
+            turn_input=turn_input,
+        )
 
         await self._repository.append_message(
             conversation=conversation,
@@ -57,7 +64,7 @@ class ChatService:
             content=response.content,
             provider=response.provider,
             model=response.model,
-            usage=response.usage,
+            usage=total_usage,
         )
 
         return ChatTurnResult(
@@ -65,8 +72,9 @@ class ChatService:
             reply=response.content,
             provider=response.provider,
             model=response.model,
-            usage=response.usage,
+            usage=total_usage,
             citations=citations,
+            tool_calls=tool_records,
         )
 
     async def stream_turn(self, turn_input: ChatTurnInput) -> AsyncIterator[ChatStreamEvent]:
@@ -128,6 +136,86 @@ class ChatService:
             model=resolved_model,
             usage=final_usage,
         )
+
+    async def _run_with_tools(
+        self,
+        messages: list[ChatMessage],
+        *,
+        turn_input: ChatTurnInput,
+    ) -> tuple[ModelResponse, list[ToolExecutionRecord], TokenUsage]:
+        tool_schemas = self._resolve_tool_schemas(turn_input)
+        records: list[ToolExecutionRecord] = []
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
+
+        for _ in range(_MAX_TOOL_ITERATIONS):
+            request = ModelRequest(
+                messages=messages,
+                model=turn_input.model,
+                tools=tool_schemas or None,
+            )
+            response = await self._provider.generate(request)
+            prompt_tokens += response.usage.prompt_tokens
+            completion_tokens += response.usage.completion_tokens
+            total_tokens += response.usage.total_tokens
+
+            if not response.tool_calls or self._tools is None or not turn_input.enable_tools:
+                return (
+                    response,
+                    records,
+                    TokenUsage(
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                    ),
+                )
+
+            messages.append(
+                ChatMessage(
+                    role="assistant",
+                    content=response.content,
+                    tool_calls=response.tool_calls,
+                )
+            )
+            for call in response.tool_calls:
+                exec_record = await self._tools.execute(
+                    call_id=call.id,
+                    tool_name=call.name,
+                    raw_arguments=call.arguments,
+                    allow_mutating=turn_input.allow_mutating_tools,
+                )
+                records.append(exec_record)
+                messages.append(
+                    ChatMessage(
+                        role="tool",
+                        tool_call_id=call.id,
+                        content=exec_record.output,
+                    )
+                )
+
+        # Final synthesis pass with tools disabled after reaching iteration cap
+        final_response = await self._provider.generate(
+            ModelRequest(messages=messages, model=turn_input.model)
+        )
+        prompt_tokens += final_response.usage.prompt_tokens
+        completion_tokens += final_response.usage.completion_tokens
+        total_tokens += final_response.usage.total_tokens
+        return (
+            final_response,
+            records,
+            TokenUsage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+            ),
+        )
+
+    def _resolve_tool_schemas(self, turn_input: ChatTurnInput) -> list[dict[str, object]]:
+        if self._tools is None or not turn_input.enable_tools:
+            return []
+        defs = self._tools.list_definitions(include_mutating=turn_input.allow_mutating_tools)
+        return [item.to_openai_tool() for item in defs]
 
     async def _retrieve_context(self, turn_input: ChatTurnInput) -> list[RetrievedChunk]:
         if self._retriever is None:

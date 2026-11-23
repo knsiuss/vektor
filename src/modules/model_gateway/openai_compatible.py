@@ -12,8 +12,10 @@ from modules.model_gateway.exceptions import (
     ProviderTimeoutError,
 )
 from modules.model_gateway.schemas import (
+    ChatMessage,
     ModelRequest,
     ModelResponse,
+    ModelToolCall,
     StreamChunk,
     TokenUsage,
 )
@@ -88,7 +90,7 @@ class OpenAICompatibleProvider:
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": resolved_model,
-            "messages": [msg.model_dump() for msg in request.messages],
+            "messages": [self._serialize_message(msg) for msg in request.messages],
             "temperature": request.temperature,
             "stream": stream,
         }
@@ -96,7 +98,24 @@ class OpenAICompatibleProvider:
             payload["stream_options"] = {"include_usage": True}
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
+        if request.tools:
+            payload["tools"] = request.tools
         return payload
+
+    def _serialize_message(self, msg: ChatMessage) -> dict[str, Any]:
+        serialized: dict[str, Any] = {"role": msg.role, "content": msg.content}
+        if msg.tool_call_id:
+            serialized["tool_call_id"] = msg.tool_call_id
+        if msg.tool_calls:
+            serialized["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.name, "arguments": tc.arguments},
+                }
+                for tc in msg.tool_calls
+            ]
+        return serialized
 
     async def _post_json(
         self,
@@ -280,8 +299,19 @@ class OpenAICompatibleProvider:
 
         first_choice = choices[0]
         message = first_choice.get("message") if isinstance(first_choice, dict) else None
-        content = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(content, str):
+        if not isinstance(message, dict):
+            raise ProviderResponseError(
+                "Upstream LLM choice missing message object.",
+                provider=self._provider_name,
+            )
+
+        tool_calls = self._parse_tool_calls(message.get("tool_calls"))
+        raw_content = message.get("content")
+        if isinstance(raw_content, str):
+            content = raw_content
+        elif tool_calls:
+            content = ""
+        else:
             raise ProviderResponseError(
                 "Upstream LLM choice missing text content.",
                 provider=self._provider_name,
@@ -309,4 +339,25 @@ class OpenAICompatibleProvider:
             finish_reason=(
                 first_choice.get("finish_reason") if isinstance(first_choice, dict) else None
             ),
+            tool_calls=tool_calls,
         )
+
+    def _parse_tool_calls(self, raw_calls: Any) -> list[ModelToolCall]:
+        if not isinstance(raw_calls, list):
+            return []
+        parsed: list[ModelToolCall] = []
+        for idx, item in enumerate(raw_calls):
+            if not isinstance(item, dict):
+                continue
+            fn = item.get("function")
+            if not isinstance(fn, dict):
+                continue
+            name = fn.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            call_id = item.get("id")
+            resolved_id = call_id if isinstance(call_id, str) and call_id else f"call_{idx}"
+            raw_args = fn.get("arguments")
+            args_str = raw_args if isinstance(raw_args, str) else json.dumps(raw_args or {})
+            parsed.append(ModelToolCall(id=resolved_id, name=name, arguments=args_str))
+        return parsed

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from api.dependencies import get_chat_service
 from modules.ai_runtime.schemas import ChatTurnInput, ChatTurnResult
 from modules.ai_runtime.service import ChatService
+from modules.conversations.repository import ConversationNotFoundError
 from modules.model_gateway.exceptions import (
     ModelGatewayError,
     ProviderAuthenticationError,
@@ -20,9 +21,14 @@ async def create_chat_turn(
     payload: ChatTurnInput,
     chat_service: Annotated[ChatService, Depends(get_chat_service)],
 ) -> ChatTurnResult:
-    """Execute a single conversational turn with the configured AI runtime."""
+    """Execute a single or multi-turn conversational request."""
     try:
         return await chat_service.execute_turn(payload)
+    except ConversationNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
     except ProviderAuthenticationError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

@@ -6,14 +6,25 @@ from fastapi import FastAPI
 
 from api.routers import chat
 from core.config.settings import Settings, get_settings
+from core.database import create_engine, create_session_factory, init_db
+from modules.conversations import models as _conversation_models  # noqa: F401
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-    """Manage shared resources across application startup and shutdown."""
-    async with httpx.AsyncClient() as http_client:
-        application.state.http_client = http_client
-        yield
+    """Manage shared HTTP client and database engine across startup and shutdown."""
+    settings: Settings = application.state.settings
+    engine = create_engine(settings.database_url)
+    application.state.db_engine = engine
+    application.state.session_factory = create_session_factory(engine)
+    await init_db(engine)
+
+    try:
+        async with httpx.AsyncClient() as http_client:
+            application.state.http_client = http_client
+            yield
+    finally:
+        await engine.dispose()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

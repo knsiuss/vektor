@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     llm_default_model: str = Field(default="gpt-4o-mini", min_length=1)
     llm_timeout_seconds: float = Field(default=30.0, gt=0.0, le=300.0)
 
+    # Persistence Configuration
+    database_url: str = Field(
+        default="sqlite+aiosqlite:///./vektor.db",
+        min_length=1,
+    )
+
     @property
     def is_production(self) -> bool:
         """Return True when running in the production environment."""

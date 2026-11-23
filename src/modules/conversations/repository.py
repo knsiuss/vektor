@@ -30,6 +30,22 @@ class ConversationRepository:
         await self._session.flush()
         return conversation
 
+    async def list_conversations(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[Conversation]:
+        """Return recent conversations ordered by last update descending."""
+        stmt = (
+            select(Conversation)
+            .order_by(Conversation.updated_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_conversation(self, conversation_id: str) -> Conversation | None:
         """Fetch a conversation along with its ordered messages, or None if missing."""
         stmt = (
@@ -39,6 +55,15 @@ class ConversationRepository:
         )
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def delete_conversation(self, conversation_id: str) -> bool:
+        """Delete a conversation by ID and return True if a record was removed."""
+        conversation = await self.get_conversation(conversation_id)
+        if conversation is None:
+            return False
+        await self._session.delete(conversation)
+        await self._session.flush()
+        return True
 
     async def append_message(
         self,

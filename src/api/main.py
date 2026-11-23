@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 
-from api.routers import chat
+from api.routers import chat, conversations
 from core.config.settings import Settings, get_settings
 from core.database import create_engine, create_session_factory, init_db
 from modules.conversations import models as _conversation_models  # noqa: F401
@@ -43,6 +43,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.state.settings = resolved_settings
     application.include_router(chat.router)
+    application.include_router(conversations.router)
 
     @application.get("/health", tags=["system"])
     async def health_check() -> dict[str, str]:

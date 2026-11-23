@@ -11,7 +11,12 @@ from api.main import create_app
 from core.config.settings import Settings
 from modules.ai_runtime.service import ChatService
 from modules.conversations.repository import ConversationRepository
-from modules.model_gateway.schemas import ModelRequest, ModelResponse, TokenUsage
+from modules.model_gateway.schemas import (
+    ModelRequest,
+    ModelResponse,
+    StreamChunk,
+    TokenUsage,
+)
 
 
 class _StubProvider:
@@ -23,6 +28,14 @@ class _StubProvider:
         return ModelResponse(
             content="Recorded reply.",
             provider=self.provider_name,
+            model=request.model or "stub-model",
+            usage=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+            finish_reason="stop",
+        )
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamChunk]:
+        yield StreamChunk(
+            delta="Recorded reply.",
             model=request.model or "stub-model",
             usage=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
             finish_reason="stop",

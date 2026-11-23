@@ -38,6 +38,7 @@ class Conversation(Base):
         back_populates="conversation",
         cascade="all, delete-orphan",
         order_by="ConversationMessage.created_at",
+        lazy="raise",
     )
 
 

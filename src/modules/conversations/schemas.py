@@ -34,3 +34,25 @@ class ConversationDetail(ConversationSummary):
     """Full conversation thread including its ordered message history."""
 
     messages: list[MessageItem]
+
+
+class ModelUsageBreakdown(BaseModel):
+    """Aggregated token usage for a specific provider and model."""
+
+    provider: str
+    model: str
+    assistant_turns: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class UsageSummary(BaseModel):
+    """Platform-wide conversation and token usage metrics."""
+
+    total_conversations: int
+    total_messages: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    by_model: list[ModelUsageBreakdown]

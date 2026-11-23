@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     llm_default_model: str = Field(default="gpt-4o-mini", min_length=1)
     llm_timeout_seconds: float = Field(default=30.0, gt=0.0, le=300.0)
 
+    llm_embedding_model: str = Field(
+        default="openai/text-embedding-3-small",
+        min_length=1,
+    )
+    llm_vision_model: str | None = Field(
+        default=None,
+        min_length=1,
+    )
+
     # Persistence Configuration
     database_url: str = Field(
         default="sqlite+aiosqlite:///./vektor.db",

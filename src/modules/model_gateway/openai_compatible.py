@@ -1,3 +1,5 @@
+import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -9,17 +11,22 @@ from modules.model_gateway.exceptions import (
     ProviderResponseError,
     ProviderTimeoutError,
 )
-from modules.model_gateway.schemas import ModelRequest, ModelResponse, TokenUsage
+from modules.model_gateway.schemas import (
+    ModelRequest,
+    ModelResponse,
+    StreamChunk,
+    TokenUsage,
+)
 
 
 class OpenAICompatibleProvider:
-    """Async LLM provider adapter for OpenAI-compatible /chat/completions endpoints."""
+    """Async adapter for OpenAI-compatible chat completion endpoints."""
 
     def __init__(
         self,
         *,
-        provider_name: str = "openai-compatible",
         api_key: SecretStr | None,
+        provider_name: str = "openai-compatible",
         base_url: str = "https://api.openai.com/v1",
         default_model: str = "gpt-4o-mini",
         timeout_seconds: float = 30.0,
@@ -30,178 +37,276 @@ class OpenAICompatibleProvider:
         self._base_url = base_url.rstrip("/")
         self._default_model = default_model
         self._timeout_seconds = timeout_seconds
-        self._client = client
+        self._external_client = client
 
     @property
     def provider_name(self) -> str:
-        """Return the canonical identifier of this provider."""
         return self._provider_name
 
     async def generate(self, request: ModelRequest) -> ModelResponse:
-        """Send a chat completion request and return a normalized ModelResponse."""
-        secret_key = self._resolve_api_key()
-        target_model = request.model or self._default_model
-        url = f"{self._base_url}/chat/completions"
+        raw_key = self._resolve_api_key()
+        resolved_model = request.model or self._default_model
+        payload = self._build_payload(request, resolved_model, stream=False)
 
-        headers = {
-            "Authorization": f"Bearer {secret_key}",
-            "Content-Type": "application/json",
-        }
-        payload: dict[str, Any] = {
-            "model": target_model,
-            "messages": [{"role": m.role, "content": m.content} for m in request.messages],
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
-        }
+        raw_data = await self._post_json("/chat/completions", payload, raw_key)
+        return self._parse_response(raw_data, resolved_model)
 
-        response = await self._send_request(url=url, headers=headers, payload=payload)
-        return self._parse_response(response=response, fallback_model=target_model)
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamChunk]:
+        raw_key = self._resolve_api_key()
+        resolved_model = request.model or self._default_model
+        payload = self._build_payload(request, resolved_model, stream=True)
+
+        async for chunk in self._stream_sse("/chat/completions", payload, raw_key, resolved_model):
+            yield chunk
 
     def _resolve_api_key(self) -> str:
-        """Validate that an API key is configured before making an external call."""
         if self._api_key is None:
             raise ProviderAuthenticationError(
-                f"API key is not configured for provider '{self._provider_name}'.",
+                "Missing API key for LLM provider.",
                 provider=self._provider_name,
             )
-        value = self._api_key.get_secret_value().strip()
-        if not value:
+        raw_value = self._api_key.get_secret_value().strip()
+        if not raw_value:
             raise ProviderAuthenticationError(
-                f"API key is empty for provider '{self._provider_name}'.",
+                "Blank API key provided for LLM provider.",
                 provider=self._provider_name,
             )
-        return value
+        return raw_value
 
-    async def _send_request(
+    def _build_headers(self, raw_key: str) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {raw_key}",
+            "Content-Type": "application/json",
+        }
+
+    def _build_payload(
         self,
+        request: ModelRequest,
+        resolved_model: str,
         *,
-        url: str,
-        headers: dict[str, str],
+        stream: bool,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": resolved_model,
+            "messages": [msg.model_dump() for msg in request.messages],
+            "temperature": request.temperature,
+            "stream": stream,
+        }
+        if stream:
+            payload["stream_options"] = {"include_usage": True}
+        if request.max_tokens is not None:
+            payload["max_tokens"] = request.max_tokens
+        return payload
+
+    async def _post_json(
+        self,
+        path: str,
         payload: dict[str, Any],
-    ) -> httpx.Response:
-        """Execute the HTTP POST request and translate transport errors."""
+        raw_key: str,
+    ) -> dict[str, Any]:
+        url = f"{self._base_url}{path}"
+        headers = self._build_headers(raw_key)
+
         try:
-            if self._client is not None:
-                return await self._client.post(
+            if self._external_client is not None:
+                response = await self._external_client.post(
                     url,
-                    headers=headers,
                     json=payload,
+                    headers=headers,
                     timeout=self._timeout_seconds,
                 )
-            async with httpx.AsyncClient(timeout=self._timeout_seconds) as temp_client:
-                return await temp_client.post(url, headers=headers, json=payload)
+            else:
+                async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
+                    response = await client.post(url, json=payload, headers=headers)
         except httpx.TimeoutException as exc:
             raise ProviderTimeoutError(
-                f"Request to provider '{self._provider_name}' timed out after "
-                f"{self._timeout_seconds}s.",
+                "Upstream LLM request timed out.",
                 provider=self._provider_name,
             ) from exc
         except httpx.HTTPError as exc:
             raise ProviderResponseError(
-                f"Network transport error communicating with provider '{self._provider_name}'.",
+                "Network error communicating with upstream LLM provider.",
                 provider=self._provider_name,
                 retryable=True,
             ) from exc
 
-    def _parse_response(self, *, response: httpx.Response, fallback_model: str) -> ModelResponse:
-        """Validate HTTP status and extract normalized content and token usage."""
-        status = response.status_code
-
-        if status in (401, 403):
-            raise ProviderAuthenticationError(
-                f"Authentication failed with provider '{self._provider_name}' (HTTP {status}).",
-                provider=self._provider_name,
-            )
-        if status == 429:
-            raise ProviderRateLimitError(
-                f"Rate limit exceeded for provider '{self._provider_name}' (HTTP 429).",
-                provider=self._provider_name,
-            )
-        if status >= 500:
-            raise ProviderResponseError(
-                f"Upstream server error from provider '{self._provider_name}' (HTTP {status}).",
-                provider=self._provider_name,
-                retryable=True,
-            )
-        if status >= 400:
-            raise ProviderResponseError(
-                f"Provider '{self._provider_name}' rejected request (HTTP {status}).",
-                provider=self._provider_name,
-                retryable=False,
-            )
+        self._raise_for_status(response.status_code)
 
         try:
-            raw_data: Any = response.json()
+            data = response.json()
         except ValueError as exc:
             raise ProviderResponseError(
-                f"Provider '{self._provider_name}' returned invalid JSON.",
+                "Upstream LLM returned invalid JSON.",
                 provider=self._provider_name,
-                retryable=False,
             ) from exc
 
-        if not isinstance(raw_data, dict):
+        if not isinstance(data, dict):
             raise ProviderResponseError(
-                f"Provider '{self._provider_name}' returned unexpected root payload type.",
+                "Upstream LLM returned unexpected payload structure.",
                 provider=self._provider_name,
-                retryable=False,
             )
+        return data
 
-        choices = raw_data.get("choices")
-        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+    async def _stream_sse(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        raw_key: str,
+        fallback_model: str,
+    ) -> AsyncIterator[StreamChunk]:
+        url = f"{self._base_url}{path}"
+        headers = self._build_headers(raw_key)
+
+        try:
+            if self._external_client is not None:
+                async with self._external_client.stream(
+                    "POST",
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=self._timeout_seconds,
+                ) as response:
+                    self._raise_for_status(response.status_code)
+                    async for chunk in self._iter_sse_lines(response, fallback_model):
+                        yield chunk
+            else:
+                async with (
+                    httpx.AsyncClient(timeout=self._timeout_seconds) as client,
+                    client.stream("POST", url, json=payload, headers=headers) as response,
+                ):
+                    self._raise_for_status(response.status_code)
+                    async for chunk in self._iter_sse_lines(response, fallback_model):
+                        yield chunk
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeoutError(
+                "Upstream LLM stream timed out.",
+                provider=self._provider_name,
+            ) from exc
+        except httpx.HTTPError as exc:
             raise ProviderResponseError(
-                f"Provider '{self._provider_name}' response missing valid 'choices' list.",
+                "Network error during upstream LLM stream.",
                 provider=self._provider_name,
-                retryable=False,
-            )
+                retryable=True,
+            ) from exc
 
-        first_choice: dict[str, Any] = choices[0]
-        message = first_choice.get("message")
-        if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+    async def _iter_sse_lines(
+        self,
+        response: httpx.Response,
+        fallback_model: str,
+    ) -> AsyncIterator[StreamChunk]:
+        async for raw_line in response.aiter_lines():
+            line = raw_line.strip()
+            if not line or not line.startswith("data:"):
+                continue
+            data_str = line[5:].strip()
+            if data_str == "[DONE]":
+                break
+            chunk = self._parse_stream_chunk(data_str, fallback_model)
+            if chunk is not None:
+                yield chunk
+
+    def _parse_stream_chunk(self, data_str: str, fallback_model: str) -> StreamChunk | None:
+        try:
+            data = json.loads(data_str)
+        except ValueError as exc:
             raise ProviderResponseError(
-                f"Provider '{self._provider_name}' response missing text message content.",
+                "Upstream LLM emitted malformed SSE JSON.",
                 provider=self._provider_name,
-                retryable=False,
-            )
+            ) from exc
 
-        usage_raw = raw_data.get("usage")
-        usage = self._parse_usage(usage_raw)
+        if not isinstance(data, dict):
+            return None
 
-        resolved_model = raw_data.get("model")
-        model_name = (
-            resolved_model
-            if isinstance(resolved_model, str) and resolved_model.strip()
-            else fallback_model
+        model_name = data.get("model")
+        resolved_model = (
+            model_name if isinstance(model_name, str) and model_name else fallback_model
         )
 
-        finish_reason_raw = first_choice.get("finish_reason")
-        finish_reason = finish_reason_raw if isinstance(finish_reason_raw, str) else None
+        usage: TokenUsage | None = None
+        raw_usage = data.get("usage")
+        if isinstance(raw_usage, dict):
+            usage = TokenUsage(
+                prompt_tokens=int(raw_usage.get("prompt_tokens", 0)),
+                completion_tokens=int(raw_usage.get("completion_tokens", 0)),
+                total_tokens=int(raw_usage.get("total_tokens", 0)),
+            )
 
-        return ModelResponse(
-            content=message["content"],
-            provider=self._provider_name,
-            model=model_name,
+        delta_text = ""
+        finish_reason: str | None = None
+        choices = data.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            delta = choices[0].get("delta")
+            if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+                delta_text = delta["content"]
+            raw_finish = choices[0].get("finish_reason")
+            if isinstance(raw_finish, str):
+                finish_reason = raw_finish
+
+        if not delta_text and usage is None and finish_reason is None:
+            return None
+
+        return StreamChunk(
+            delta=delta_text,
+            model=resolved_model,
             usage=usage,
             finish_reason=finish_reason,
         )
 
-    @staticmethod
-    def _parse_usage(usage_raw: Any) -> TokenUsage:
-        """Safely extract non-negative integer token counts from provider usage metadata."""
-        if not isinstance(usage_raw, dict):
-            return TokenUsage()
+    def _raise_for_status(self, status_code: int) -> None:
+        if status_code in (401, 403):
+            raise ProviderAuthenticationError(
+                "Upstream LLM rejected authentication credentials.",
+                provider=self._provider_name,
+            )
+        if status_code == 429:
+            raise ProviderRateLimitError(
+                "Upstream LLM rate limit exceeded.",
+                provider=self._provider_name,
+            )
+        if status_code >= 400:
+            raise ProviderResponseError(
+                f"Upstream LLM returned HTTP {status_code}.",
+                provider=self._provider_name,
+                retryable=status_code >= 500,
+            )
 
-        prompt = usage_raw.get("prompt_tokens")
-        completion = usage_raw.get("completion_tokens")
-        total = usage_raw.get("total_tokens")
+    def _parse_response(self, raw_data: dict[str, Any], fallback_model: str) -> ModelResponse:
+        choices = raw_data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise ProviderResponseError(
+                "Upstream LLM response contained no choices.",
+                provider=self._provider_name,
+            )
 
-        prompt_tokens = prompt if isinstance(prompt, int) and prompt >= 0 else 0
-        completion_tokens = completion if isinstance(completion, int) and completion >= 0 else 0
-        total_tokens = (
-            total if isinstance(total, int) and total >= 0 else (prompt_tokens + completion_tokens)
+        first_choice = choices[0]
+        message = first_choice.get("message") if isinstance(first_choice, dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str):
+            raise ProviderResponseError(
+                "Upstream LLM choice missing text content.",
+                provider=self._provider_name,
+            )
+
+        raw_usage = raw_data.get("usage")
+        usage = TokenUsage()
+        if isinstance(raw_usage, dict):
+            usage = TokenUsage(
+                prompt_tokens=int(raw_usage.get("prompt_tokens", 0)),
+                completion_tokens=int(raw_usage.get("completion_tokens", 0)),
+                total_tokens=int(raw_usage.get("total_tokens", 0)),
+            )
+
+        model_name = raw_data.get("model")
+        resolved_model = (
+            model_name if isinstance(model_name, str) and model_name else fallback_model
         )
 
-        return TokenUsage(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
+        return ModelResponse(
+            content=content,
+            provider=self._provider_name,
+            model=resolved_model,
+            usage=usage,
+            finish_reason=(
+                first_choice.get("finish_reason") if isinstance(first_choice, dict) else None
+            ),
         )

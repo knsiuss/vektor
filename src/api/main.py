@@ -4,10 +4,12 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 
-from api.routers import chat, conversations
+from api.middleware import request_context_middleware
+from api.routers import chat, conversations, knowledge, usage
 from core.config.settings import Settings, get_settings
 from core.database import create_engine, create_session_factory, init_db
 from modules.conversations import models as _conversation_models  # noqa: F401
+from modules.knowledge import models as _knowledge_models  # noqa: F401
 
 
 @asynccontextmanager
@@ -42,8 +44,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.settings = resolved_settings
+    application.middleware("http")(request_context_middleware)
     application.include_router(chat.router)
     application.include_router(conversations.router)
+    application.include_router(knowledge.router)
+    application.include_router(usage.router)
 
     @application.get("/health", tags=["system"])
     async def health_check() -> dict[str, str]:

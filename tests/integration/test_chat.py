@@ -16,7 +16,7 @@ from modules.model_gateway.exceptions import (
     ProviderRateLimitError,
     ProviderTimeoutError,
 )
-from modules.model_gateway.schemas import ModelRequest, ModelResponse, TokenUsage
+from modules.model_gateway.schemas import ModelRequest, ModelResponse, StreamChunk, TokenUsage
 
 
 class _FakeProvider:
@@ -41,6 +41,19 @@ class _FakeProvider:
         return ModelResponse(
             content=self._reply,
             provider=self.provider_name,
+            model=request.model or "fake-model-v1",
+            usage=TokenUsage(prompt_tokens=20, completion_tokens=5, total_tokens=25),
+            finish_reason="stop",
+        )
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamChunk]:
+        self.requests.append(request)
+        if self._error is not None:
+            raise self._error
+        for word in self._reply.split(" "):
+            yield StreamChunk(delta=f"{word} ", model=request.model or "fake-model-v1")
+        yield StreamChunk(
+            delta="",
             model=request.model or "fake-model-v1",
             usage=TokenUsage(prompt_tokens=20, completion_tokens=5, total_tokens=25),
             finish_reason="stop",

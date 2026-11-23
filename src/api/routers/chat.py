@@ -1,8 +1,11 @@
+from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.dependencies import get_chat_service
+from api.dependencies import get_chat_service, get_db_session
 from modules.ai_runtime.schemas import ChatTurnInput, ChatTurnResult
 from modules.ai_runtime.service import ChatService
 from modules.conversations.repository import ConversationNotFoundError
@@ -49,3 +52,19 @@ async def create_chat_turn(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Upstream LLM provider failed to fulfill the request.",
         ) from exc
+
+
+@router.post("/stream")
+async def stream_chat_turn(
+    payload: ChatTurnInput,
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> StreamingResponse:
+    """Stream conversational chunks over Server-Sent Events and persist the turn."""
+
+    async def _event_generator() -> AsyncIterator[str]:
+        async for event in chat_service.stream_turn(payload):
+            yield f"event: {event.event}\ndata: {event.model_dump_json(exclude_none=True)}\n\n"
+        await session.commit()
+
+    return StreamingResponse(_event_generator(), media_type="text/event-stream")

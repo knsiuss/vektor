@@ -1,15 +1,19 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
 
+from api.routers import chat
 from core.config.settings import Settings, get_settings
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Manage application startup and shutdwon lifecycle events"""
-    yield
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    """Manage shared resources across application startup and shutdown."""
+    async with httpx.AsyncClient() as http_client:
+        application.state.http_client = http_client
+        yield
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -27,6 +31,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.settings = resolved_settings
+    application.include_router(chat.router)
 
     @application.get("/health", tags=["system"])
     async def health_check() -> dict[str, str]:

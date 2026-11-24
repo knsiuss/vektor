@@ -11,14 +11,18 @@ from api.routers import (
     admin,
     artifact_evidence,
     artifacts,
+    channel_webhooks,
+    channels,
     chat,
     conversations,
     gateway,
+    inbox,
     keys,
     knowledge,
     mcp,
     me,
     memory,
+    prompts,
     providers,
     public_chat,
     usage,
@@ -37,6 +41,7 @@ from api.security import (
 from core.config.settings import Settings, get_settings
 from core.database import create_engine, create_session_factory, init_db
 from modules.billing import models as _billing_models  # noqa: F401
+from modules.channels import models as _channels_models  # noqa: F401
 from modules.conversations import models as _conversation_models  # noqa: F401
 from modules.identity import models as _identity_models  # noqa: F401
 from modules.knowledge import models as _knowledge_models  # noqa: F401
@@ -201,6 +206,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     application.middleware("http")(request_context_middleware)
     application.include_router(auth_router.router)
+    application.include_router(prompts.router)
     application.include_router(chat.router)
     application.include_router(conversations.router)
     application.include_router(knowledge.router)
@@ -217,6 +223,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(keys.router)
     application.include_router(widgets.router)
     application.include_router(public_chat.router)
+    application.include_router(channels.router)
+    application.include_router(channel_webhooks.router)
+    application.include_router(inbox.router)
 
     @application.get("/health", tags=["system"])
     async def health_check() -> dict[str, str]:

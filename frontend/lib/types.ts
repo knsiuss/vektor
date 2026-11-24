@@ -387,3 +387,13 @@ export type LiveTurn = {
   toolCalls: ToolCall[];
   model: string | null;
 };
+
+
+export type PromptTemplate = {
+  key: string;
+  label: string;
+  description: string;
+  default_content: string;
+  content: string;
+  is_custom: boolean;
+};

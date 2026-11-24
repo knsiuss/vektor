@@ -1,6 +1,7 @@
 import { parseExtraHeaders } from "./headers";
 import { getSupabaseAccessToken, refreshSupabaseSession } from "./supabase";
 import type {
+  PromptTemplate,
   ChatRequest,
   ChatResponse,
   Connection,
@@ -166,6 +167,21 @@ export function listProviderModels(
     body: payload,
     timeoutMs: 20_000,
   });
+}
+
+export function getPrompts(connection: Connection) {
+  return api<PromptTemplate[]>("prompts", connection);
+}
+
+export function savePrompt(connection: Connection, key: string, content: string) {
+  return api<PromptTemplate>(`prompts/${encodeURIComponent(key)}`, connection, {
+    method: "PUT",
+    body: { content },
+  });
+}
+
+export function resetPrompt(connection: Connection, key: string) {
+  return api<void>(`prompts/${encodeURIComponent(key)}`, connection, { method: "DELETE" });
 }
 
 export function getProviderSettings(connection: Connection) {

@@ -89,6 +89,8 @@ class Settings(BaseSettings):
 
     api_keys: str = Field(default="")
     rate_limit_per_minute: int = Field(default=60, ge=1, le=10_000)
+    # Upload guard for knowledge files. 0 disables the check; the proxy may still cap it.
+    max_upload_bytes: int = Field(default=100 * 1024 * 1024, ge=0)
 
     agent_max_history_messages: int = Field(default=20, ge=1, le=100)
     agent_max_history_tokens: int = Field(default=3500, ge=256, le=32000)

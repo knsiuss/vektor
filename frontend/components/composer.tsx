@@ -29,7 +29,8 @@ import {
 } from "./icons";
 
 export const ACCEPTED_FILE_TYPES = ".pdf,.docx,.md,.txt,.csv,.json,.png,.jpg,.jpeg";
-export const MAX_FILE_SIZE = 15 * 1024 * 1024;
+const MAX_UPLOAD_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB ?? 100);
+export const MAX_FILE_SIZE = MAX_UPLOAD_MB * 1024 * 1024;
 const RETRIEVAL_LABELS: Record<RetrievalMode, string> = {
   auto: "Auto (Agentic)",
   always: "Always On",
@@ -45,7 +46,7 @@ const REASONING_LABELS: Record<string, string> = {
 
 export function validateDocument(file: File) {
   if (!/\.(pdf|docx|md|txt|csv|json|png|jpe?g)$/i.test(file.name)) return "Choose a PDF, DOCX, Markdown, text, CSV, JSON, PNG, or JPG file.";
-  if (file.size > MAX_FILE_SIZE) return "File size must be 15 MB or less.";
+  if (file.size > MAX_FILE_SIZE) return `File size must be ${MAX_UPLOAD_MB} MB or less.`;
   return null;
 }
 

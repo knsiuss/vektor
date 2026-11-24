@@ -137,6 +137,7 @@ async def _client(
     resolved = settings or Settings(
         _env_file=None,  # type: ignore[call-arg]
         database_url="sqlite+aiosqlite:///:memory:",
+        max_upload_bytes=10 * 1024 * 1024,
     )
     app = create_app(settings=resolved)
     app.dependency_overrides[get_embedding_provider] = lambda: _FakeEmbeddings()

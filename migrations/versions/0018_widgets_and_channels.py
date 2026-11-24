@@ -12,6 +12,9 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    if sa.inspect(op.get_bind()).has_table("chat_widgets"):
+        # Provisioned out-of-band (metadata.create_all); keep the migration re-runnable.
+        return
     op.create_table(
         "chat_widgets",
         sa.Column("id", sa.String(length=36), primary_key=True),

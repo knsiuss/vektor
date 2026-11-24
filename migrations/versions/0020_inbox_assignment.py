@@ -12,6 +12,9 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    columns = {column["name"] for column in sa.inspect(op.get_bind()).get_columns("channel_sessions")}
+    if "assigned_agent_id" in columns:
+        return
     op.add_column(
         "channel_sessions",
         sa.Column("assigned_agent_id", sa.String(length=128), nullable=True),

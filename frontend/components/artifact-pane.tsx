@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { Copy, Download, Maximize2, Minimize2, X } from "lucide-react";
+import { EvidencePanel } from "@/components/artifacts/EvidencePanel";
+import { HtmlAppViewer } from "@/components/artifacts/HtmlAppViewer";
 
 export interface ArtifactItem {
   id: string;
@@ -35,6 +37,9 @@ export function ArtifactPane({
 }) {
   const [fullscreen, setFullscreen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [selectedEvidence, setSelectedEvidence] = useState<string | null>(null);
+  const [tablePage, setTablePage] = useState(0);
+  const pageSize = 50;
 
   function handleCopy() {
     void navigator.clipboard.writeText(JSON.stringify(artifact.source, null, 2));
@@ -166,19 +171,23 @@ export function ArtifactPane({
                         <span key={sIdx}>
                           {s.text}
                           {s.evidence && (
-                            <sup
-                              title={`Evidence: ${s.evidence}`}
+                            <button
+                              type="button"
+                              onClick={() => setSelectedEvidence(s.evidence ?? null)}
+                              title={`Lihat sumber: ${s.evidence}`}
                               style={{
                                 marginLeft: "3px",
                                 padding: "1px 4px",
                                 borderRadius: "4px",
+                                border: "none",
+                                cursor: "pointer",
                                 background: "rgba(59,130,246,0.18)",
                                 color: "#93c5fd",
                                 fontSize: "10px",
                               }}
                             >
                               {s.evidence}
-                            </sup>
+                            </button>
                           )}
                         </span>
                       ))
@@ -202,8 +211,8 @@ export function ArtifactPane({
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, r) => (
-                  <tr key={r}>
+                {rows.slice(tablePage * pageSize, (tablePage + 1) * pageSize).map((row, r) => (
+                  <tr key={tablePage * pageSize + r}>
                     {row.map((cell, c) => (
                       <td key={c} style={{ padding: "6px 8px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
                         {String(cell)}
@@ -213,24 +222,24 @@ export function ArtifactPane({
                 ))}
               </tbody>
             </table>
+            {rows.length > pageSize && (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: "8px", fontSize: "11px", color: "#a1a1aa" }}>
+                <span>
+                  Baris {tablePage * pageSize + 1}–{Math.min((tablePage + 1) * pageSize, rows.length)} dari {rows.length}
+                </span>
+                <div style={{ display: "flex", gap: "6px" }}>
+                  <button type="button" disabled={tablePage === 0} onClick={() => setTablePage((p) => p - 1)}>Prev</button>
+                  <button type="button" disabled={(tablePage + 1) * pageSize >= rows.length} onClick={() => setTablePage((p) => p + 1)}>Next</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {artifact.type === "html_app" && typeof artifact.source.html === "string" && (
-          <iframe
-            title={artifact.title}
-            sandbox="allow-scripts"
-            referrerPolicy="no-referrer"
-            srcDoc={artifact.source.html}
-            style={{
-              width: "100%",
-              height: "100%",
-              minHeight: "420px",
-              border: "1px solid rgba(255,255,255,0.08)",
-              borderRadius: "10px",
-              background: "#ffffff",
-            }}
-          />
+          <div style={{ height: "100%", minHeight: "420px", borderRadius: "10px", overflow: "hidden" }}>
+            <HtmlAppViewer html={artifact.source.html} title={artifact.title} />
+          </div>
         )}
 
         {artifact.type !== "document" && artifact.type !== "table" && artifact.type !== "html_app" && (
@@ -239,6 +248,13 @@ export function ArtifactPane({
           </pre>
         )}
       </div>
+      {selectedEvidence && (
+        <EvidencePanel
+          artifactId={artifact.id}
+          evidenceId={selectedEvidence}
+          onClose={() => setSelectedEvidence(null)}
+        />
+      )}
     </aside>
   );
 }

@@ -97,3 +97,5 @@ export function shortModelName(modelId: string | null | undefined): string {
   const withoutVendor = modelId.includes("/") ? modelId.split("/").slice(1).join("/") : modelId;
   return withoutVendor.replace(/:free$/, "");
 }
+
+

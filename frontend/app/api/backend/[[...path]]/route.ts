@@ -6,6 +6,23 @@ import { parseExtraHeaders } from "@/lib/headers";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/** A saved localhost backend is meaningless on a deployed host; fall back to the server default. */
+function usableBackendHeader(request: NextRequest): string | null {
+  const raw = request.headers.get("x-vektor-backend");
+  if (!raw) return null;
+  let host = "";
+  try {
+    host = new URL(raw).hostname;
+  } catch {
+    return raw;
+  }
+  const pageHost = request.nextUrl.hostname;
+  if (LOOPBACK_HOSTS.has(host) && !LOOPBACK_HOSTS.has(pageHost)) return null;
+  return raw;
+}
+
 async function forward(
   request: NextRequest,
   { params }: { params: Promise<{ path?: string[] }> },
@@ -14,7 +31,7 @@ async function forward(
   const resolved = buildBackendRequest({
     path,
     method: request.method,
-    baseUrl: request.headers.get("x-vektor-backend"),
+    baseUrl: usableBackendHeader(request),
     apiKey: request.headers.get("x-vektor-api-key"),
     allowedOrigins: process.env.VEKTOR_ALLOWED_BACKEND_ORIGINS,
     defaultBaseUrl: process.env.VEKTOR_BACKEND_URL,

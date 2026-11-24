@@ -17,7 +17,7 @@ export function ProviderProfilesCard({
   const [profiles, setProfiles] = useState<ProviderProfile[]>([]);
   const [label, setLabel] = useState("");
   const [provider, setProvider] = useState<ProviderName>("openrouter");
-  const [model, setModel] = useState("openai/gpt-4o-mini");
+  const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);

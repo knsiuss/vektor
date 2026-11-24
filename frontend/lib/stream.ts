@@ -1,4 +1,5 @@
 import { ApiError, backendHeaders, failureFrom } from "./api";
+import { getSupabaseAccessToken, refreshSupabaseSession } from "./supabase";
 import { parseSse } from "./sse";
 import type { ChatRequest, ChatStreamEvent, Connection } from "./types";
 
@@ -40,14 +41,27 @@ export async function streamChat(
   arm();
   try {
     let response: Response;
-    try {
-      response = await fetch("/api/backend/chat/stream", {
+    // Chat must carry the signed-in identity, otherwise the turn is recorded anonymously.
+    const accessToken = await getSupabaseAccessToken();
+    const headers: Record<string, string> = backendHeaders(connection, true);
+    if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+    const send = () =>
+      fetch("/api/backend/chat/stream", {
         method: "POST",
-        headers: backendHeaders(connection, true),
+        headers,
         body: JSON.stringify(request),
         signal: controller.signal,
         cache: "no-store",
       });
+    try {
+      response = await send();
+      if (response.status === 401 && headers.Authorization) {
+        const refreshed = await refreshSupabaseSession();
+        if (refreshed) {
+          headers.Authorization = `Bearer ${refreshed}`;
+          response = await send();
+        }
+      }
     } catch (error) {
       if (signal?.aborted) throw error;
       if (idled) {

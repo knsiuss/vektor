@@ -280,6 +280,30 @@ class ChatService:
             reasoning=response.reasoning,
         )
 
+    async def _sync_and_load_user_memories(self, turn_input: ChatTurnInput) -> list[str]:
+        """Auto-save explicit 'ingat/remember' notes and load this user's cross-session memories."""
+        from modules.memory.repository import UserMemoryRepository
+
+        repo = UserMemoryRepository(self._repository._session)
+        text = turn_input.message.strip()
+        lowered = text.lower()
+        for prefix in ("ingat:", "ingat ", "remember:", "remember "):
+            if lowered.startswith(prefix):
+                note = text[len(prefix) :].strip()
+                if note:
+                    await repo.add_memory(
+                        tenant_id=turn_input.tenant_id,
+                        user_id=turn_input.user_id,
+                        content=note,
+                    )
+                break
+        rows = await repo.list_memories(
+            tenant_id=turn_input.tenant_id,
+            user_id=turn_input.user_id,
+            limit=15,
+        )
+        return [row.content for row in rows]
+
     async def stream_turn(self, turn_input: ChatTurnInput) -> AsyncIterator[ChatStreamEvent]:
         """Stream status updates, citations, tool activity and reply chunks, then persist turn."""
         try:
@@ -944,11 +968,20 @@ class ChatService:
         searched: bool = False,
         confidence: ConfidenceLevel = "high",
         ambiguous: bool = False,
+        user_memories: Sequence[str] = (),
     ) -> list[ChatMessage]:
         # Place stable system + history prefix before dynamic RAG context to enable prompt caching.
         messages: list[ChatMessage] = [
             ChatMessage(role="system", content=self._system_prompt),
         ]
+        if user_memories:
+            joined = "\n".join(f"- {item}" for item in user_memories)
+            messages.append(
+                ChatMessage(
+                    role="system",
+                    content=f"<user_memory>\n{joined}\n</user_memory>",
+                )
+            )
 
         recent_messages = select_budgeted_history(
             conversation.messages,

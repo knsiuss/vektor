@@ -1,5 +1,5 @@
 import { parseExtraHeaders } from "./headers";
-import { getSupabaseAccessToken } from "./supabase";
+import { getSupabaseAccessToken, refreshSupabaseSession } from "./supabase";
 import type {
   ChatRequest,
   ChatResponse,
@@ -82,9 +82,8 @@ async function request<T>(path: string, connection: Connection, options: Options
     headers.Authorization = `Bearer ${accessToken}`;
   }
 
-  let response: Response;
-  try {
-    response = await fetch(`/api/backend/${path}`, {
+  const send = () =>
+    fetch(`/api/backend/${path}`, {
       method: options.method ?? "GET",
       headers,
       body:
@@ -96,6 +95,18 @@ async function request<T>(path: string, connection: Connection, options: Options
       signal,
       cache: "no-store",
     });
+
+  let response: Response;
+  try {
+    response = await send();
+    // An expired token is a 401 even though the session is still valid: refresh once.
+    if (response.status === 401 && headers.Authorization) {
+      const refreshed = await refreshSupabaseSession();
+      if (refreshed) {
+        headers.Authorization = `Bearer ${refreshed}`;
+        response = await send();
+      }
+    }
   } catch (error) {
     if (options.signal?.aborted) throw error;
     if (error instanceof DOMException && error.name === "TimeoutError") {

@@ -44,6 +44,7 @@ import { ConfirmDialog } from "./drawer";
 import { Activity, BarChart3, BookOpen, ChevronRight, Cpu, Search, Settings, SidebarToggle, VektorLogo } from "./icons";
 import { KnowledgeView } from "./knowledge-view";
 import { LoginScreen } from "./login-screen";
+import { isSupabaseConfigured } from "@/lib/supabase";
 import { ProfileModal } from "./profile-modal";
 import { DEFAULT_CONNECTION, SettingsView } from "./settings-view";
 import { Sidebar } from "./sidebar";
@@ -122,7 +123,7 @@ async function checkBackend(connection: Connection): Promise<ConnectionCheck> {
   }
 }
 
-export function VektorApp() {
+export function VektorApp({ initialConversationId }: { initialConversationId?: string } = {}) {
   const [hydrated, setHydrated] = useState(false);
   const [connection, setConnection] = useState<Connection>({ ...DEFAULT_CONNECTION });
   const [check, setCheck] = useState<ConnectionCheck>(CHECKING);
@@ -140,7 +141,22 @@ export function VektorApp() {
   const [activity, setActivity] = useState<ActivityItem[]>([]);
 
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(initialConversationId ?? null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const targetPath = activeId ? `/chat/${activeId}` : "/";
+    if (window.location.pathname !== targetPath) {
+      window.history.replaceState(null, "", targetPath);
+    }
+  }, [activeId]);
+
+  useEffect(() => {
+    if (initialConversationId) {
+      void selectConversation(initialConversationId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialConversationId]);
   const [loadingConversations, setLoadingConversations] = useState(false);
   const [conversationsError, setConversationsError] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -219,7 +235,9 @@ export function VektorApp() {
       .catch((cause) => {
         if (cancelled) return;
         const status = cause instanceof ApiError ? cause.status : 0;
-        setAuthState(status === 401 ? "required" : "ready");
+        // Supabase deployments own the login route; this inline screen is the fallback.
+        const requiresLogin = status === 401 && !isSupabaseConfigured();
+        setAuthState(requiresLogin ? "required" : "ready");
         if (status === 401) {
           setAuthReason(
             new URLSearchParams(window.location.search).get("login") === "failed"

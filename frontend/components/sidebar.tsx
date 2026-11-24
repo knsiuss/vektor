@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { LogOut } from "lucide-react";
 
 import { groupConversations } from "@/lib/conversations";
 import { initials } from "@/lib/format";
+import { getSupabaseClient, isSupabaseConfigured } from "@/lib/supabase";
 import type { ConnectionCheck, View } from "@/lib/types";
 
 import {
@@ -75,7 +77,20 @@ export function Sidebar({
     };
     document.addEventListener("click", close);
     document.addEventListener("keydown", onKey);
-    return () => {
+    const [supabaseEmail, setSupabaseEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return;
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    void supabase.auth.getUser().then(({ data }) => {
+      setSupabaseEmail(data.user?.email ?? null);
+    });
+  }, []);
+
+  const displayName = supabaseEmail ?? userName;
+
+  return () => {
       document.removeEventListener("click", close);
       document.removeEventListener("keydown", onKey);
     };
@@ -85,6 +100,19 @@ export function Sidebar({
 
   const statusText =
     check.status === "connected" ? "Connected" : check.status === "checking" ? "Connecting" : "Not connected";
+
+  const [supabaseEmail, setSupabaseEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return;
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    void supabase.auth.getUser().then(({ data }) => {
+      setSupabaseEmail(data.user?.email ?? null);
+    });
+  }, []);
+
+  const displayName = supabaseEmail ?? userName;
 
   return (
     <>
@@ -169,11 +197,24 @@ export function Sidebar({
             </span>
             <ConnectionBars active={check.status === "connected"} />
           </button>
-          <button className="v-user" onClick={onOpenProfile} aria-label={`Open profile for ${userName}`}>
-            <span className="v-avatar" aria-hidden="true">{initials(userName)}</span>
-            <span className="sidebar-label v-user-name">{userName}</span>
-            <ChevronDown size={16} aria-hidden="true" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button className="v-user flex-1" onClick={onOpenProfile} aria-label={`Open profile for ${displayName}`}>
+              <span className="v-avatar" aria-hidden="true">{initials(displayName)}</span>
+              <span className="sidebar-label v-user-name">{displayName}</span>
+              <ChevronDown size={16} aria-hidden="true" />
+            </button>
+            {supabaseEmail && (
+              <button
+                type="button"
+                onClick={() => void getSupabaseClient()?.auth.signOut()}
+                title="Sign out"
+                aria-label="Sign out"
+                className="p-2 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60"
+              >
+                <LogOut size={16} aria-hidden="true" />
+              </button>
+            )}
+          </div>
         </div>
       </aside>
     </>

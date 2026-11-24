@@ -23,3 +23,13 @@ export async function getSupabaseAccessToken(): Promise<string | null> {
   const { data } = await client.auth.getSession();
   return data.session?.access_token ?? null;
 }
+
+
+/** Force a token refresh; returns the new access token or null when there is no session. */
+export async function refreshSupabaseSession(): Promise<string | null> {
+  const client = getSupabaseClient();
+  if (!client) return null;
+  const { data, error } = await client.auth.refreshSession();
+  if (error) return null;
+  return data.session?.access_token ?? null;
+}

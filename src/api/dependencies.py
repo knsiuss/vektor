@@ -22,6 +22,7 @@ from modules.model_gateway.embeddings import (
     VoyageEmbeddingProvider,
 )
 from modules.model_gateway.openai_compatible import OpenAICompatibleProvider
+from modules.prompts.repository import PromptRepository
 from modules.providers.catalog import resolve_base_url
 from modules.settings.profile_repo import ProviderProfileRepository
 from modules.settings.repository import ProviderSettingRepository
@@ -204,6 +205,16 @@ async def get_selected_model(
     return record.model if record and record.model else None
 
 
+async def get_system_prompt(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    principal: Annotated[Principal, Depends(get_principal)],
+) -> str | None:
+    """Return the user's Markdown persona override, or None to use the shipped default."""
+    return await PromptRepository(
+        session, tenant_id=principal.tenant_id, user_id=principal.user_id
+    ).get("system")
+
+
 def _build_chat_service(
     *,
     settings: Settings,
@@ -213,6 +224,7 @@ def _build_chat_service(
     principal: Principal,
     recorder: UsageRecorder,
     selected_model: str | None = None,
+    system_prompt: str | None = None,
 ) -> ChatService:
     base_provider = OpenAICompatibleProvider(
         provider_name=settings.llm_provider_name,
@@ -262,6 +274,7 @@ def _build_chat_service(
             )
         else:
             from sqlalchemy import select
+
             from modules.settings.profile_models import ProviderProfile
 
             stmt = (
@@ -296,6 +309,7 @@ def _build_chat_service(
         retriever=retriever,
         tool_registry=tool_registry,
         usage_repo=usage_repo,
+        system_prompt=system_prompt,
         skill_catalog=skill_catalog,
         tracer=tracer,
         provider_resolver=_resolve_provider,
@@ -316,6 +330,7 @@ def get_chat_service(
     principal: Annotated[Principal, Depends(get_principal)],
     recorder: Annotated[UsageRecorder, Depends(get_usage_recorder)],
     selected_model: Annotated[str | None, Depends(get_selected_model)],
+    system_prompt: Annotated[str | None, Depends(get_system_prompt)],
 ) -> ChatService:
     """Build a ChatService wired to LLM provider, RAG retriever, and tool registry."""
     return _build_chat_service(
@@ -326,6 +341,7 @@ def get_chat_service(
         principal=principal,
         recorder=recorder,
         selected_model=selected_model,
+        system_prompt=system_prompt,
     )
 
 
@@ -366,6 +382,7 @@ def get_chat_service_factory(
     principal: Annotated[Principal, Depends(get_principal)],
     recorder: Annotated[UsageRecorder, Depends(get_usage_recorder)],
     selected_model: Annotated[str | None, Depends(get_selected_model)],
+    system_prompt: Annotated[str | None, Depends(get_system_prompt)],
 ) -> ChatServiceFactory:
     """Return a factory that binds a ChatService to a caller-owned session (for streaming)."""
     settings = cast(Settings, request.app.state.settings)
@@ -380,6 +397,7 @@ def get_chat_service_factory(
             principal=principal,
             recorder=recorder,
             selected_model=selected_model,
+            system_prompt=system_prompt,
         )
 
     return _factory

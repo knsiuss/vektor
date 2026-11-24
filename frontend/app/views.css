@@ -2742,3 +2742,20 @@ dialog.v-profile {
   font-weight: 800;
 }
 .login-footnote { margin: 4px 0 0; color: var(--color-muted); font-size: 12px; }
+
+/* Prompt template editor */
+.prompt-editor {
+  width: 100%;
+  min-height: 220px;
+  padding: 12px 14px;
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  background: var(--input-bg);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  resize: vertical;
+}
+.prompt-editor:focus { outline: none; border-color: var(--color-accent); box-shadow: 0 0 0 3px var(--focus-ring); }
+.prompt-editor-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }

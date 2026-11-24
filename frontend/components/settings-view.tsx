@@ -19,6 +19,7 @@ import {
 import { formatDateTime } from "@/lib/format";
 import { FALLBACK_MODELS } from "@/lib/models";
 import { ModelPicker } from "./model-picker";
+import { PromptTemplatesCard } from "./prompt-templates-card";
 import { ProviderProfilesCard } from "./provider-profiles-card";
 import { VaultPolicyCard } from "./vault-policy-card";
 import {
@@ -461,6 +462,8 @@ export function SettingsView({
                 Test Connection
               </button>
             </section>
+
+            <PromptTemplatesCard connection={connection} />
 
             <section className="v-card v-tips" aria-labelledby="tips-title">
               <h2 id="tips-title"><Info size={16} aria-hidden="true" />Tips</h2>

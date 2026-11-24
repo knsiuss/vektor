@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     )
     llm_chat_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
 
+    # Supabase Auth (browser login). Prompts fail-closed when either value is set.
+    supabase_url: str | None = None
+    supabase_jwt_secret: SecretStr | None = None
+
     # OAuth login (Google / GitHub). Empty client id disables that provider.
     public_frontend_url: str = Field(default="http://localhost:3000", min_length=1)
     auth_session_secret: SecretStr | None = None

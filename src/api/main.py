@@ -9,6 +9,7 @@ from api.auth import resolve_principal
 from api.middleware import request_context_middleware
 from api.routers import (
     admin,
+    artifacts,
     chat,
     conversations,
     gateway,
@@ -16,6 +17,7 @@ from api.routers import (
     knowledge,
     mcp,
     me,
+    memory,
     providers,
     usage,
     workflows,
@@ -91,8 +93,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """Create and configure the Vektor FastAPI application instance."""
     resolved_settings = settings or get_settings()
     valid_api_keys = resolved_settings.parsed_api_keys()
-    # Unauthenticated access is only ever permitted in local development.
-    allow_open_access = resolved_settings.app_env == "development"
+    # Unauthenticated access is only ever permitted in local development, and never when
+    # Supabase auth is configured: otherwise every browser silently becomes the dev user.
+    supabase_auth_enabled = bool(
+        resolved_settings.supabase_url or resolved_settings.supabase_jwt_secret
+    )
+    allow_open_access = (
+        resolved_settings.app_env == "development" and not supabase_auth_enabled
+    )
     limiter = SlidingWindowRateLimiter(max_requests=resolved_settings.rate_limit_per_minute)
 
     application = FastAPI(
@@ -160,7 +168,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(knowledge.router)
     application.include_router(usage.router)
     application.include_router(me.router)
+    application.include_router(memory.router)
     application.include_router(admin.router)
+    application.include_router(artifacts.router)
     application.include_router(providers.router)
     application.include_router(workflows.router)
     application.include_router(mcp.router)

@@ -1,4 +1,5 @@
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -6,6 +7,8 @@ from typing import Any
 from modules.tools.schemas import ToolDefinition, ToolExecutionRecord
 
 ToolHandler = Callable[[dict[str, Any]], Awaitable[str]]
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -82,14 +85,18 @@ class ToolRegistry:
                 arguments=parsed_args,
                 status="success",
                 output=result,
+                ui_resource_uri=entry.definition.ui_resource_uri,
             )
-        except Exception as exc:
+        except Exception:
+            # The model sees a generic failure; details stay in the server log so an
+            # upstream error cannot leak hostnames or credentials into a prompt.
+            _logger.exception("tool execution failed tool=%s call=%s", tool_name, call_id)
             return ToolExecutionRecord(
                 call_id=call_id,
                 tool_name=tool_name,
                 arguments=parsed_args,
                 status="error",
-                output=f"Tool execution failed: {exc}",
+                output="Tool execution failed. The error was logged.",
             )
 
 

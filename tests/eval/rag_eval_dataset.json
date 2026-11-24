@@ -1,0 +1,32 @@
+[
+  {
+    "id": "pg-failover-1",
+    "question": "Bagaimana cara mempromosikan replica PostgreSQL saat primary mengalami outage?",
+    "ground_truth": "Verifikasi status cluster dengan patroni list, pastikan replika sehat, lalu jalankan pg_ctl promote atau patroni failover.",
+    "expected_sources": ["SOP-Postgres-Failover.md"]
+  },
+  {
+    "id": "k8s-crashloop-1",
+    "question": "Apa langkah diagnosa pod Kubernetes yang mengalami CrashLoopBackOff atau OOMKilled?",
+    "ground_truth": "Jalankan kubectl describe pod dan kubectl logs --previous untuk melihat exit code 137 serta naikkan memory limits bila terjadi OOMKilled.",
+    "expected_sources": ["Runbook-Kubernetes.md"]
+  },
+  {
+    "id": "nginx-502-1",
+    "question": "Kenapa Nginx mengembalikan 502 Bad Gateway dan bagaimana memeriksanya?",
+    "ground_truth": "Periksa status upstream backend, socket timeout proxy_read_timeout, dan error log Nginx.",
+    "expected_sources": ["Runbook-Nginx.md"]
+  },
+  {
+    "id": "redis-quorum-1",
+    "question": "Mengapa Redis Sentinel gagal melakukan failover otomatis?",
+    "ground_truth": "Biasanya karena quorum Sentinel tidak tercapai atau mayoritas Sentinel tidak dapat menjangkau master.",
+    "expected_sources": ["Runbook-Redis.md"]
+  },
+  {
+    "id": "out-of-scope-1",
+    "question": "Berapa harga langganan Spotify Family di Indonesia bulan ini?",
+    "ground_truth": "Informasi tidak tersedia di knowledge base.",
+    "expected_sources": []
+  }
+]

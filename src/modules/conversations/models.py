@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.database import Base
@@ -22,6 +22,10 @@ class Conversation(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Consecutive clarification turns; reset by any answer. Caps follow-up questions.
+    clarify_streak: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    owner_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -61,6 +65,9 @@ class ConversationMessage(Base):
     prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # "answer" | "clarify" | "unknown"; None for rows written before the envelope existed.
+    status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    clarify_options: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

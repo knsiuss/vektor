@@ -18,6 +18,7 @@ from modules.model_gateway.schemas import (
     ModelToolCall,
     StreamChunk,
     TokenUsage,
+    ToolCallDelta,
 )
 
 
@@ -100,6 +101,8 @@ class OpenAICompatibleProvider:
             payload["max_tokens"] = request.max_tokens
         if request.tools:
             payload["tools"] = request.tools
+        if request.reasoning_effort is not None:
+            payload["reasoning_effort"] = request.reasoning_effort
         return payload
 
     def _serialize_message(self, msg: ChatMessage) -> dict[str, Any]:
@@ -244,32 +247,75 @@ class OpenAICompatibleProvider:
         usage: TokenUsage | None = None
         raw_usage = data.get("usage")
         if isinstance(raw_usage, dict):
-            usage = TokenUsage(
-                prompt_tokens=int(raw_usage.get("prompt_tokens", 0)),
-                completion_tokens=int(raw_usage.get("completion_tokens", 0)),
-                total_tokens=int(raw_usage.get("total_tokens", 0)),
-            )
+            usage = _parse_usage(raw_usage)
 
         delta_text = ""
+        reasoning_text = ""
+        tool_deltas: list[ToolCallDelta] = []
         finish_reason: str | None = None
         choices = data.get("choices")
         if isinstance(choices, list) and choices and isinstance(choices[0], dict):
             delta = choices[0].get("delta")
-            if isinstance(delta, dict) and isinstance(delta.get("content"), str):
-                delta_text = delta["content"]
+            if isinstance(delta, dict):
+                if isinstance(delta.get("content"), str):
+                    delta_text = delta["content"]
+                # Providers expose reasoning under different keys: DeepSeek uses
+                # reasoning_content, OpenRouter normalizes to reasoning.
+                for key in ("reasoning_content", "reasoning"):
+                    value = delta.get(key)
+                    if isinstance(value, str):
+                        reasoning_text = value
+                        break
+                tool_deltas = self._parse_tool_call_deltas(delta.get("tool_calls"))
             raw_finish = choices[0].get("finish_reason")
             if isinstance(raw_finish, str):
                 finish_reason = raw_finish
 
-        if not delta_text and usage is None and finish_reason is None:
+        if (
+            not delta_text
+            and not reasoning_text
+            and not tool_deltas
+            and usage is None
+            and finish_reason is None
+        ):
             return None
 
         return StreamChunk(
             delta=delta_text,
+            reasoning=reasoning_text,
+            tool_call_deltas=tool_deltas,
             model=resolved_model,
             usage=usage,
             finish_reason=finish_reason,
         )
+
+    @staticmethod
+    def _parse_tool_call_deltas(raw_calls: Any) -> list[ToolCallDelta]:
+        if not isinstance(raw_calls, list):
+            return []
+        deltas: list[ToolCallDelta] = []
+        for position, item in enumerate(raw_calls):
+            if not isinstance(item, dict):
+                continue
+            fn = item.get("function")
+            fn = fn if isinstance(fn, dict) else {}
+            raw_index = item.get("index")
+            raw_args = fn.get("arguments")
+            deltas.append(
+                ToolCallDelta(
+                    index=raw_index if isinstance(raw_index, int) else position,
+                    id=item.get("id") if isinstance(item.get("id"), str) else None,
+                    name=fn.get("name") if isinstance(fn.get("name"), str) else None,
+                    arguments=(
+                        raw_args
+                        if isinstance(raw_args, str)
+                        else json.dumps(raw_args)
+                        if isinstance(raw_args, dict)
+                        else ""
+                    ),
+                )
+            )
+        return deltas
 
     def _raise_for_status(self, status_code: int) -> None:
         if status_code in (401, 403):
@@ -317,14 +363,18 @@ class OpenAICompatibleProvider:
                 provider=self._provider_name,
             )
 
+        # Reasoning traces are provider-specific; accept the common key variants.
+        reasoning = ""
+        for key in ("reasoning_content", "reasoning"):
+            value = message.get(key)
+            if isinstance(value, str) and value:
+                reasoning = value
+                break
+
         raw_usage = raw_data.get("usage")
         usage = TokenUsage()
         if isinstance(raw_usage, dict):
-            usage = TokenUsage(
-                prompt_tokens=int(raw_usage.get("prompt_tokens", 0)),
-                completion_tokens=int(raw_usage.get("completion_tokens", 0)),
-                total_tokens=int(raw_usage.get("total_tokens", 0)),
-            )
+            usage = _parse_usage(raw_usage)
 
         model_name = raw_data.get("model")
         resolved_model = (
@@ -333,6 +383,7 @@ class OpenAICompatibleProvider:
 
         return ModelResponse(
             content=content,
+            reasoning=reasoning,
             provider=self._provider_name,
             model=resolved_model,
             usage=usage,
@@ -361,3 +412,20 @@ class OpenAICompatibleProvider:
             args_str = raw_args if isinstance(raw_args, str) else json.dumps(raw_args or {})
             parsed.append(ModelToolCall(id=resolved_id, name=name, arguments=args_str))
         return parsed
+
+
+def _parse_usage(raw_usage: dict[str, Any]) -> TokenUsage:
+    details = raw_usage.get("prompt_tokens_details")
+    cached = 0
+    if isinstance(details, dict):
+        cached = int(details.get("cached_tokens", 0) or 0)
+    if not cached:
+        cached = int(raw_usage.get("cache_read_input_tokens", 0) or 0)
+    cache_create = int(raw_usage.get("cache_creation_input_tokens", 0) or 0)
+    return TokenUsage(
+        prompt_tokens=int(raw_usage.get("prompt_tokens", 0) or 0),
+        completion_tokens=int(raw_usage.get("completion_tokens", 0) or 0),
+        total_tokens=int(raw_usage.get("total_tokens", 0) or 0),
+        cached_tokens=cached,
+        cache_creation_tokens=cache_create,
+    )

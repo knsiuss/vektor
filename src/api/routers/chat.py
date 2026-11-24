@@ -1,11 +1,17 @@
 from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.dependencies import get_chat_service, get_db_session
+from api.dependencies import (
+    ChatServiceFactory,
+    get_chat_service,
+    get_chat_service_factory,
+    get_session_factory,
+    get_usage_recorder,
+)
+from api.streaming import stream_events
 from modules.ai_runtime.schemas import ChatTurnInput, ChatTurnResult
 from modules.ai_runtime.service import ChatService
 from modules.conversations.repository import ConversationNotFoundError
@@ -15,6 +21,7 @@ from modules.model_gateway.exceptions import (
     ProviderRateLimitError,
     ProviderTimeoutError,
 )
+from modules.usage.recorder import UsageRecorder
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
 
@@ -57,14 +64,29 @@ async def create_chat_turn(
 @router.post("/stream")
 async def stream_chat_turn(
     payload: ChatTurnInput,
-    chat_service: Annotated[ChatService, Depends(get_chat_service)],
-    session: Annotated[AsyncSession, Depends(get_db_session)],
+    request: Request,
+    service_factory: Annotated[ChatServiceFactory, Depends(get_chat_service_factory)],
+    recorder: Annotated[UsageRecorder, Depends(get_usage_recorder)],
 ) -> StreamingResponse:
-    """Stream conversational chunks over Server-Sent Events and persist the turn."""
+    """Stream conversational chunks over Server-Sent Events and persist the turn.
 
-    async def _event_generator() -> AsyncIterator[str]:
-        async for event in chat_service.stream_turn(payload):
-            yield f"event: {event.event}\ndata: {event.model_dump_json(exclude_none=True)}\n\n"
-        await session.commit()
+    The stream owns its database session: a request-scoped dependency session may already be
+    closed by the time the response body is produced. If the reader disconnects (Stop), the
+    answer text sent so far is saved with a "stopped" marker.
+    """
 
-    return StreamingResponse(_event_generator(), media_type="text/event-stream")
+    async def _events() -> AsyncIterator[str]:
+        async with get_session_factory(request)() as session:
+            async for frame in stream_events(
+                service=service_factory(session),
+                session=session,
+                payload=payload,
+                recorder=recorder,
+            ):
+                yield frame
+
+    return StreamingResponse(
+        _events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no"},
+    )

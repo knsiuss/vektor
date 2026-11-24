@@ -34,6 +34,8 @@ class ModelRequest(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int | None = Field(default=None, ge=1)
     tools: list[dict[str, Any]] | None = None
+    # Provider reasoning budget. None leaves the model at its default effort.
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
 
 
 class TokenUsage(BaseModel):
@@ -44,6 +46,8 @@ class TokenUsage(BaseModel):
     prompt_tokens: int = Field(default=0, ge=0)
     completion_tokens: int = Field(default=0, ge=0)
     total_tokens: int = Field(default=0, ge=0)
+    cached_tokens: int = Field(default=0, ge=0)
+    cache_creation_tokens: int = Field(default=0, ge=0)
 
 
 class ModelResponse(BaseModel):
@@ -57,6 +61,19 @@ class ModelResponse(BaseModel):
     usage: TokenUsage = Field(default_factory=TokenUsage)
     finish_reason: str | None = None
     tool_calls: list[ModelToolCall] = Field(default_factory=list)
+    # Reasoning/thinking trace when the provider exposes it (e.g. DeepSeek R1, Claude thinking).
+    reasoning: str = ""
+
+
+class ToolCallDelta(BaseModel):
+    """One fragment of a tool call that a provider streams across several chunks."""
+
+    model_config = ConfigDict(frozen=True)
+
+    index: int = 0
+    id: str | None = None
+    name: str | None = None
+    arguments: str = ""
 
 
 class StreamChunk(BaseModel):
@@ -68,3 +85,7 @@ class StreamChunk(BaseModel):
     model: str | None = None
     usage: TokenUsage | None = None
     finish_reason: str | None = None
+    # Incremental reasoning/thinking text, separate from the answer delta.
+    reasoning: str = ""
+    # Fragments of tool calls; join them with ToolCallAccumulator.
+    tool_call_deltas: list[ToolCallDelta] = Field(default_factory=list)

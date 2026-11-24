@@ -1,6 +1,9 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+Visibility = Literal["private", "tenant", "shared"]
 
 
 class DocumentIngestInput(BaseModel):
@@ -11,6 +14,7 @@ class DocumentIngestInput(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     content: str = Field(min_length=1, max_length=200_000)
     source: str = Field(default="manual", min_length=1, max_length=255)
+    visibility: Visibility = "private"
 
 
 class DocumentSummary(BaseModel):
@@ -23,6 +27,35 @@ class DocumentSummary(BaseModel):
     source: str
     embedding_model: str
     chunk_count: int
+    created_at: datetime
+    owner_id: str = ""
+    visibility: str = "private"
+
+
+class VisibilityUpdate(BaseModel):
+    """Payload for changing who can see an existing document."""
+
+    model_config = ConfigDict(frozen=True)
+
+    visibility: Literal["private", "tenant"]
+
+
+class DocumentGrantIn(BaseModel):
+    """Payload for sharing a document with one user."""
+
+    model_config = ConfigDict(frozen=True)
+
+    grantee_id: str = Field(min_length=1, max_length=128)
+
+
+class DocumentGrantOut(BaseModel):
+    """Serialized grant entry for a shared document."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    document_id: str
+    grantee_id: str
+    permission: str
     created_at: datetime
 
 

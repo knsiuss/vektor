@@ -1,6 +1,9 @@
+import math
 import re
+from collections.abc import Awaitable, Callable, Sequence
 
 _HEADING_RE = re.compile(r"^(#{1,3})\s+(.+)$")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n{2,}")
 
 
 def chunk_text(
@@ -80,3 +83,79 @@ def _sliding_window(text: str, *, chunk_size: int, overlap: int) -> list[str]:
         start = max(start + 1, end - overlap)
 
     return segments
+
+
+async def semantic_chunk_text(
+    text: str,
+    *,
+    embed_fn: Callable[[list[str]], Awaitable[Sequence[Sequence[float]]]],
+    document_title: str = "",
+    min_chunk_chars: int = 180,
+    max_chunk_chars: int = 900,
+    breakpoint_percentile: float = 0.20,
+) -> list[str]:
+    """Split text at semantic topic boundaries detected via adjacent sentence cosine drops."""
+    normalized = re.sub(r"\r\n?", "\n", text).strip()
+    if not normalized:
+        return []
+
+    sections = _split_by_headings(normalized)
+    chunks: list[str] = []
+
+    for section_title, body in sections:
+        prefix_parts = [f"Doc: {document_title}"] if document_title else []
+        if section_title:
+            prefix_parts.append(f"Section: {section_title}")
+        prefix = f"[{' | '.join(prefix_parts)}]\n" if prefix_parts else ""
+
+        sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(body) if s.strip()]
+        if len(sentences) <= 2 or len(body) <= min_chunk_chars:
+            for seg in _sliding_window(body, chunk_size=max_chunk_chars, overlap=120):
+                chunks.append(f"{prefix}{seg}")
+            continue
+
+        vectors = await embed_fn(sentences)
+        sims = [
+            _cosine(vectors[i], vectors[i + 1])
+            for i in range(len(sentences) - 1)
+        ]
+        sorted_sims = sorted(sims)
+        raw_idx = int(len(sorted_sims) * breakpoint_percentile)
+        cutoff_idx = max(0, min(len(sorted_sims) - 1, raw_idx))
+        threshold = sorted_sims[cutoff_idx]
+
+        current: list[str] = [sentences[0]]
+        current_len = len(sentences[0])
+        for idx, sim in enumerate(sims):
+            nxt = sentences[idx + 1]
+            should_split = (
+                (sim <= threshold and current_len >= min_chunk_chars)
+                or (current_len + 1 + len(nxt) > max_chunk_chars and current_len >= min_chunk_chars)
+            )
+            if should_split:
+                joined = " ".join(current).strip()
+                for seg in _sliding_window(joined, chunk_size=max_chunk_chars, overlap=120):
+                    chunks.append(f"{prefix}{seg}")
+                current = [nxt]
+                current_len = len(nxt)
+            else:
+                current.append(nxt)
+                current_len += 1 + len(nxt)
+
+        if current:
+            joined = " ".join(current).strip()
+            for seg in _sliding_window(joined, chunk_size=max_chunk_chars, overlap=120):
+                chunks.append(f"{prefix}{seg}")
+
+    return chunks
+
+
+def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    if not a or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return dot / (na * nb)

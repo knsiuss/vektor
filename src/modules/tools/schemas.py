@@ -14,6 +14,7 @@ class ToolDefinition(BaseModel):
     description: str = Field(min_length=1, max_length=512)
     parameters_schema: dict[str, Any]
     risk_level: ToolRiskLevel = "read"
+    ui_resource_uri: str | None = None
 
     def to_openai_tool(self) -> dict[str, Any]:
         """Serialize into standard OpenAI function-calling schema."""
@@ -37,3 +38,4 @@ class ToolExecutionRecord(BaseModel):
     arguments: dict[str, Any]
     status: Literal["success", "blocked", "error"]
     output: str
+    ui_resource_uri: str | None = None

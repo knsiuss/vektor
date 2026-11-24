@@ -1,4 +1,5 @@
 import base64
+from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from pydantic import SecretStr
 from pypdf import PdfReader
 
 _TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".csv", ".json", ".yaml", ".yml", ".log"}
+_MAX_PDF_PAGES = 500
 _IMAGE_MIME_TYPES: dict[str, str] = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -32,12 +34,14 @@ class DocumentExtractor:
         vision_model: str = "gpt-4o-mini",
         timeout_seconds: float = 45.0,
         client: httpx.AsyncClient | None = None,
+        on_usage: Callable[[str, int, int, int], None] | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._vision_model = vision_model
         self._timeout_seconds = timeout_seconds
         self._external_client = client
+        self._on_usage = on_usage
 
     async def extract(self, *, filename: str, content_bytes: bytes) -> str:
         """Route file bytes to the appropriate format parser and return normalized text."""
@@ -74,6 +78,11 @@ class DocumentExtractor:
             reader = PdfReader(BytesIO(content_bytes))
         except Exception as exc:
             raise UnsupportedDocumentError("Failed to read PDF structure.") from exc
+
+        if len(reader.pages) > _MAX_PDF_PAGES:
+            raise UnsupportedDocumentError(
+                f"PDF exceeds the maximum of {_MAX_PDF_PAGES} pages."
+            )
 
         pages: list[str] = []
         for idx, page in enumerate(reader.pages, start=1):
@@ -170,4 +179,13 @@ class DocumentExtractor:
         content = choices[0].get("message", {}).get("content")
         if not isinstance(content, str) or not content.strip():
             raise UnsupportedDocumentError("No readable text extracted from image.")
+
+        usage = data.get("usage") if isinstance(data, dict) else None
+        if self._on_usage is not None and isinstance(usage, dict):
+            self._on_usage(
+                self._vision_model,
+                int(usage.get("prompt_tokens") or 0),
+                int(usage.get("completion_tokens") or 0),
+                int(usage.get("total_tokens") or 0),
+            )
         return content.strip()

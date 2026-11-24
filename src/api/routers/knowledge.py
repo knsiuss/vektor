@@ -18,14 +18,25 @@ from api.dependencies import (
     get_db_session,
     get_document_extractor,
     get_embedding_provider,
+    get_principal,
 )
+from modules.identity.models import AuditLog
+from modules.identity.principal import Principal
 from modules.knowledge.extractors import DocumentExtractor, UnsupportedDocumentError
-from modules.knowledge.repository import DuplicateDocumentError, KnowledgeRepository
+from modules.knowledge.repository import (
+    DocumentAccessDeniedError,
+    DocumentNotFoundError,
+    DuplicateDocumentError,
+    KnowledgeRepository,
+)
 from modules.knowledge.schemas import (
+    DocumentGrantIn,
+    DocumentGrantOut,
     DocumentIngestInput,
     DocumentSummary,
     KnowledgeSearchInput,
     RetrievedChunk,
+    VisibilityUpdate,
 )
 from modules.model_gateway.embeddings import EmbeddingProvider
 from modules.model_gateway.exceptions import (
@@ -41,8 +52,27 @@ _MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB guard
 def _get_knowledge_repo(
     session: Annotated[AsyncSession, Depends(get_db_session)],
     embeddings: Annotated[EmbeddingProvider, Depends(get_embedding_provider)],
+    principal: Annotated[Principal, Depends(get_principal)],
 ) -> KnowledgeRepository:
-    return KnowledgeRepository(session=session, embedding_provider=embeddings)
+    return KnowledgeRepository(
+        session=session,
+        embedding_provider=embeddings,
+        principal=principal,
+    )
+
+
+def _not_found(document_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Knowledge document '{document_id}' was not found.",
+    )
+
+
+def _forbidden(document_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=f"You may read document '{document_id}' but not change it.",
+    )
 
 
 @router.post(
@@ -60,6 +90,7 @@ async def ingest_text_document(
             title=payload.title,
             content=payload.content,
             source=payload.source,
+            visibility=payload.visibility,
         )
     except DuplicateDocumentError as exc:
         raise HTTPException(
@@ -170,12 +201,97 @@ async def search_knowledge(
 async def delete_document(
     document_id: str,
     repo: Annotated[KnowledgeRepository, Depends(_get_knowledge_repo)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    principal: Annotated[Principal, Depends(get_principal)],
 ) -> Response:
     """Remove a document and all of its indexed chunks from the knowledge base."""
-    deleted = await repo.delete_document(document_id)
-    if not deleted:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Knowledge document '{document_id}' was not found.",
+    try:
+        document = await repo.delete_document(document_id)
+    except DocumentNotFoundError as exc:
+        raise _not_found(document_id) from exc
+    except DocumentAccessDeniedError as exc:
+        raise _forbidden(document_id) from exc
+
+    # Deleting someone else's document is privileged access: keep a record of it.
+    if document.owner_id != principal.user_id:
+        session.add(
+            AuditLog(
+                tenant_id=principal.tenant_id,
+                actor_id=principal.user_id,
+                action="knowledge.delete",
+                resource_type="knowledge_document",
+                resource_id=document.id,
+                resource_owner_id=document.owner_id,
+            )
         )
+        await session.flush()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch("/documents/{document_id}/visibility", response_model=DocumentSummary)
+async def update_visibility(
+    document_id: str,
+    payload: VisibilityUpdate,
+    repo: Annotated[KnowledgeRepository, Depends(_get_knowledge_repo)],
+) -> DocumentSummary:
+    """Switch a managed document between private and tenant-wide visibility."""
+    try:
+        return await repo.set_visibility(document_id, payload.visibility)
+    except DocumentNotFoundError as exc:
+        raise _not_found(document_id) from exc
+    except DocumentAccessDeniedError as exc:
+        raise _forbidden(document_id) from exc
+
+
+@router.get("/documents/{document_id}/grants", response_model=list[DocumentGrantOut])
+async def list_document_grants(
+    document_id: str,
+    repo: Annotated[KnowledgeRepository, Depends(_get_knowledge_repo)],
+) -> list[DocumentGrantOut]:
+    """List the users who were granted read access to this document."""
+    try:
+        grants = await repo.list_grants(document_id)
+    except DocumentNotFoundError as exc:
+        raise _not_found(document_id) from exc
+    except DocumentAccessDeniedError as exc:
+        raise _forbidden(document_id) from exc
+    return [DocumentGrantOut.model_validate(grant) for grant in grants]
+
+
+@router.post(
+    "/documents/{document_id}/grants",
+    response_model=DocumentGrantOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_document_grant(
+    document_id: str,
+    payload: DocumentGrantIn,
+    repo: Annotated[KnowledgeRepository, Depends(_get_knowledge_repo)],
+) -> DocumentGrantOut:
+    """Share a document with one user, switching it to shared visibility."""
+    try:
+        grant = await repo.add_grant(document_id, payload.grantee_id)
+    except DocumentNotFoundError as exc:
+        raise _not_found(document_id) from exc
+    except DocumentAccessDeniedError as exc:
+        raise _forbidden(document_id) from exc
+    return DocumentGrantOut.model_validate(grant)
+
+
+@router.delete(
+    "/documents/{document_id}/grants/{grantee_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_document_grant(
+    document_id: str,
+    grantee_id: str,
+    repo: Annotated[KnowledgeRepository, Depends(_get_knowledge_repo)],
+) -> Response:
+    """Revoke one user's access to a shared document."""
+    try:
+        await repo.remove_grant(document_id, grantee_id)
+    except DocumentNotFoundError as exc:
+        raise _not_found(grantee_id) from exc
+    except DocumentAccessDeniedError as exc:
+        raise _forbidden(document_id) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)

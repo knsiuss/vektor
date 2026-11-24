@@ -20,3 +20,7 @@ build/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local databases (can contain conversations and document text)
+*.db
+*.sqlite3

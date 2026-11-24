@@ -25,13 +25,22 @@ def test_settings_rejects_invalid_environment() -> None:
 
 async def test_docs_disabled_in_production() -> None:
     """Verify OpenAPI docs and schema return 404 when running in production."""
-    prod_settings = Settings(_env_file=None, app_env="production")  # type: ignore[call-arg]
+    prod_settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        app_env="production",
+        api_keys="vk-prod-secret-1",
+    )
     app = create_app(settings=prod_settings)
-    transport = httpx.ASGITransport(app=app)
+    headers = {"X-API-Key": "vk-prod-secret-1"}
 
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        docs_response = await client.get("/docs")
-        openapi_response = await client.get("/openapi.json")
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client,
+    ):
+        docs_response = await client.get("/docs", headers=headers)
+        openapi_response = await client.get("/openapi.json", headers=headers)
 
     assert prod_settings.is_production is True
     assert prod_settings.docs_enabled is False

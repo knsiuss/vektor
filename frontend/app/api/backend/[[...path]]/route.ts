@@ -1,0 +1,76 @@
+import { type NextRequest, NextResponse } from "next/server";
+
+import { buildBackendRequest } from "@/lib/backend";
+import { parseExtraHeaders } from "@/lib/headers";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+async function forward(
+  request: NextRequest,
+  { params }: { params: Promise<{ path?: string[] }> },
+) {
+  const { path = [] } = await params;
+  const resolved = buildBackendRequest({
+    path,
+    method: request.method,
+    baseUrl: request.headers.get("x-vektor-backend"),
+    apiKey: request.headers.get("x-vektor-api-key"),
+    allowedOrigins: process.env.VEKTOR_ALLOWED_BACKEND_ORIGINS,
+    defaultBaseUrl: process.env.VEKTOR_BACKEND_URL,
+  });
+
+  if ("error" in resolved) {
+    return NextResponse.json({ detail: resolved.error }, { status: 400 });
+  }
+
+  const headers = new Headers();
+  const contentType = request.headers.get("content-type");
+  if (contentType) headers.set("content-type", contentType);
+  if (resolved.apiKey) headers.set("x-api-key", resolved.apiKey);
+
+  const encodedExtra = request.headers.get("x-vektor-extra-headers");
+  if (encodedExtra) {
+    try {
+      const { headers: extra } = parseExtraHeaders(decodeURIComponent(encodedExtra));
+      for (const [name, value] of Object.entries(extra)) headers.set(name, value);
+    } catch {
+      // Malformed extra headers are ignored; the client validates them before sending.
+    }
+  }
+
+  // Forward query parameters (for example ?days=30) to the same, already allow-listed path.
+  const upstreamUrl = new URL(resolved.url);
+  upstreamUrl.search = request.nextUrl.search;
+
+  try {
+    const body =
+      request.method === "GET" || request.method === "DELETE"
+        ? undefined
+        : await request.arrayBuffer();
+    const upstream = await fetch(upstreamUrl, {
+      method: request.method,
+      headers,
+      body,
+      cache: "no-store",
+      signal: request.signal,
+    });
+    return new NextResponse(upstream.body, {
+      status: upstream.status,
+      headers: {
+        "content-type": upstream.headers.get("content-type") ?? "application/json",
+        "cache-control": "no-store, no-transform",
+        "x-accel-buffering": "no",
+      },
+    });
+  } catch (error) {
+    if (request.signal.aborted) return new NextResponse(null, { status: 499 });
+    console.error("Vektor backend request failed", error);
+    return NextResponse.json(
+      { detail: "Could not reach the Vektor backend. Check the backend URL and try again." },
+      { status: 502 },
+    );
+  }
+}
+
+export { forward as DELETE, forward as GET, forward as POST };

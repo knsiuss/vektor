@@ -2,6 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from modules.ai_runtime.grounding import GroundingReport
 from modules.knowledge.schemas import RetrievedChunk
 from modules.model_gateway.schemas import TokenUsage
 from modules.tools.schemas import ToolExecutionRecord
@@ -20,6 +21,7 @@ class ChatTurnInput(BaseModel):
     top_k: int = Field(default=4, ge=1, le=10)
     enable_tools: bool = True
     allow_mutating_tools: bool = False
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
 
 
 class ChatTurnResult(BaseModel):
@@ -34,6 +36,12 @@ class ChatTurnResult(BaseModel):
     usage: TokenUsage
     citations: list[RetrievedChunk] = Field(default_factory=list)
     tool_calls: list[ToolExecutionRecord] = Field(default_factory=list)
+    grounding: GroundingReport | None = None
+    reasoning: str = ""
+    # answer | clarify | unknown; `reply` always holds the displayable text.
+    status: Literal["answer", "clarify", "unknown"] = "answer"
+    clarifying_question: str | None = None
+    options: list[str] = Field(default_factory=list)
 
 
 class ChatStreamEvent(BaseModel):
@@ -41,11 +49,19 @@ class ChatStreamEvent(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    event: Literal["meta", "citations", "delta", "done", "error"]
+    event: Literal[
+        "meta", "status", "result", "citations", "tool", "reasoning", "delta", "done", "error"
+    ]
     conversation_id: str | None = None
+    status: str | None = None
     delta: str | None = None
+    reasoning: str | None = None
     provider: str | None = None
     model: str | None = None
     usage: TokenUsage | None = None
     citations: list[RetrievedChunk] | None = None
+    tool_calls: list[ToolExecutionRecord] | None = None
+    grounding: GroundingReport | None = None
+    clarifying_question: str | None = None
+    options: list[str] | None = None
     detail: str | None = None

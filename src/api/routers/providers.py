@@ -16,6 +16,7 @@ from core.config.settings import Settings
 from modules.identity.principal import Principal
 from modules.providers.catalog import (
     ModelCatalog,
+    ModelOption,
     ProviderCatalogError,
     fetch_provider_models,
     resolve_base_url,
@@ -321,5 +322,11 @@ async def list_profile_models(
             client=http_client,
         )
     except ProviderCatalogError as exc:
-        return ModelCatalog(provider=record.provider, models=[], error=str(exc), endpoint=base_url)
+        fallback = [ModelOption(id=record.model, name=record.model)] if record.model else []
+        return ModelCatalog(
+            provider=record.provider,
+            models=fallback,
+            error=None if fallback else str(exc),
+            endpoint=base_url,
+        )
     return ModelCatalog(provider=record.provider, models=models, endpoint=base_url)

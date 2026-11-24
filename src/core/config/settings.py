@@ -74,6 +74,15 @@ class Settings(BaseSettings):
     )
     llm_chat_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
 
+    # OAuth login (Google / GitHub). Empty client id disables that provider.
+    public_frontend_url: str = Field(default="http://localhost:3000", min_length=1)
+    auth_session_secret: SecretStr | None = None
+    auth_session_days: int = Field(default=30, ge=1, le=365)
+    oauth_google_client_id: str | None = None
+    oauth_google_client_secret: SecretStr | None = None
+    oauth_github_client_id: str | None = None
+    oauth_github_client_secret: SecretStr | None = None
+
     api_keys: str = Field(default="")
     rate_limit_per_minute: int = Field(default=60, ge=1, le=10_000)
 

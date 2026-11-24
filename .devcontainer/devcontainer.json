@@ -1,0 +1,16 @@
+{
+  "name": "Vektor (backend + frontend)",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "22" }
+  },
+  "postCreateCommand": "pip install uv && uv sync --frozen && (cd frontend && npm ci)",
+  "forwardPorts": [8000, 3000],
+  "portsAttributes": {
+    "8000": { "label": "Vektor API", "visibility": "public" },
+    "3000": { "label": "Vektor Web", "visibility": "public" }
+  },
+  "customizations": {
+    "vscode": { "extensions": ["ms-python.python", "dbaeumer.vscode-eslint"] }
+  }
+}

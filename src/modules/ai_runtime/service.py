@@ -296,21 +296,37 @@ class ChatService:
             model=turn_input.model,
         )
 
-        if self._retriever is not None and self._retriever.should_search(
-            turn_input.message,
-            mode=turn_input.retrieval_mode,
-        ):
+        should_search = (
+            self._retriever is not None
+            and self._retriever.should_search(
+                turn_input.message,
+                mode=turn_input.retrieval_mode,
+            )
+        )
+        if should_search and turn_input.retrieval_mode == "auto" and not turn_input.document_ids:
+            docs = await self._retriever._repo.list_documents(limit=1)  # type: ignore[union-attr]
+            if not docs:
+                should_search = False
+
+        if should_search:
             yield ChatStreamEvent(event="status", status="Searching knowledge base...")
 
-        try:
-            outcome = await self._retrieve_context(turn_input, conversation=conversation)
-            citations = outcome.chunks
-        except ModelGatewayError:
-            if turn_input.retrieval_mode == "always":
-                yield ChatStreamEvent(event="error", detail="Knowledge retrieval failed upstream.")
-                return
-            outcome = RetrievalOutcome(chunks=[])
+        if not should_search:
+            outcome = RetrievalOutcome(chunks=[], searched=False)
             citations = []
+        else:
+            try:
+                outcome = await self._retrieve_context(turn_input, conversation=conversation)
+                citations = outcome.chunks
+            except ModelGatewayError:
+                if turn_input.retrieval_mode == "always":
+                    yield ChatStreamEvent(
+                        event="error",
+                        detail="Knowledge retrieval failed upstream.",
+                    )
+                    return
+                outcome = RetrievalOutcome(chunks=[], searched=False)
+                citations = []
 
         if self._should_refuse_before_generate(turn_input, outcome):
             await self._repository.append_message(

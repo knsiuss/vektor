@@ -2688,3 +2688,57 @@ dialog.v-profile {
   border: 1px solid #D9770655;
   color: #D97706;
 }
+
+/* Login gate: shown when the backend rejects an unauthenticated request. */
+.login-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--page-bg);
+}
+.login-card {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  padding: 36px 32px 30px;
+  border: 1px solid var(--card-border);
+  border-radius: 20px;
+  background: var(--color-card);
+  box-shadow: var(--shadow-lg);
+  text-align: center;
+}
+.login-card h1 { margin: 6px 0 0; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+.login-sub { margin: 0 0 6px; color: var(--color-muted); font-size: 13.5px; }
+.login-actions { display: grid; gap: 10px; width: 100%; margin-top: 6px; }
+.login-provider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 14px;
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.login-provider:hover:not(:disabled) { border-color: var(--color-ink-weak); background: var(--color-card); }
+.login-provider:disabled { opacity: 0.5; cursor: not-allowed; }
+.login-provider-mark {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  font-size: 11px;
+  font-weight: 800;
+}
+.login-footnote { margin: 4px 0 0; color: var(--color-muted); font-size: 12px; }

@@ -20,6 +20,9 @@ from api.routers import (
     usage,
     workflows,
 )
+from api.routers import (
+    auth as auth_router,
+)
 from api.security import (
     SlidingWindowRateLimiter,
     build_rate_limited_response,
@@ -112,13 +115,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if request.url.path == "/health":
             return await call_next(request)
 
-        presented_key = extract_presented_api_key(request)
-        principal = await resolve_principal(
-            presented_key=presented_key,
-            legacy_keys=valid_api_keys,
-            allow_open=allow_open_access,
-            session_factory=application.state.session_factory,
-        )
+        # Public login endpoints run before a session exists; /auth/me and /auth/logout
+        # still resolve normally so development open access keeps working.
+        path = request.url.path
+        if path == "/api/v1/auth/providers" or (
+            path.startswith("/api/v1/auth/")
+            and (path.endswith("/start") or path.endswith("/callback"))
+        ):
+            return await call_next(request)
+
+        from modules.identity.supabase_auth import extract_bearer_jwt, verify_supabase_jwt
+
+        bearer_jwt = extract_bearer_jwt(request)
+        if bearer_jwt is not None:
+            principal = verify_supabase_jwt(bearer_jwt)
+        else:
+            presented_key = extract_presented_api_key(request)
+            principal = await resolve_principal(
+                presented_key=presented_key,
+                session_token=request.cookies.get("vektor_session"),
+                legacy_keys=valid_api_keys,
+                allow_open=allow_open_access,
+                session_factory=application.state.session_factory,
+            )
         if principal is None:
             return build_unauthorized_response()
         request.state.principal = principal
@@ -135,6 +154,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return response
 
     application.middleware("http")(request_context_middleware)
+    application.include_router(auth_router.router)
     application.include_router(chat.router)
     application.include_router(conversations.router)
     application.include_router(knowledge.router)

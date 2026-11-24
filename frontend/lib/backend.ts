@@ -44,6 +44,11 @@ const routes: Record<string, string[]> = {
   "mcp/resources": ["GET"],
   "mcp/tools/call": ["POST"],
   health: ["GET"],
+  "auth/providers": ["GET"],
+  "auth/me": ["GET"],
+  "auth/logout": ["POST"],
+  "auth/:id/start": ["GET"],
+  "auth/:id/callback": ["GET"],
 };
 
 export function buildBackendRequest(input: BackendRequest): ResolvedRequest {
@@ -63,9 +68,12 @@ export function buildBackendRequest(input: BackendRequest): ResolvedRequest {
     );
   });
 
+  const isUuid = !id || /^[a-f\d-]{36}$/i.test(id);
+  // OAuth routes carry a provider name ("google"/"github"), not a record id.
+  const isProvider = Boolean(match?.startsWith("auth/")) && /^[a-z]{3,16}$/i.test(id);
   if (
     !match ||
-    (id && !/^[a-f\d-]{36}$/i.test(id)) ||
+    (!isUuid && !isProvider) ||
     !routes[match].includes(input.method) ||
     input.path.some((part) => !part || part === "." || part === "..")
   ) {

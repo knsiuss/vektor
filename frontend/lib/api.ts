@@ -1,4 +1,5 @@
 import { parseExtraHeaders } from "./headers";
+import { getSupabaseAccessToken } from "./supabase";
 import type {
   ChatRequest,
   ChatResponse,
@@ -72,11 +73,20 @@ async function request<T>(path: string, connection: Connection, options: Options
   const timeout = AbortSignal.timeout(timeoutMs);
   const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
 
+  const headers = backendHeaders(
+    connection,
+    options.body !== undefined && !(options.body instanceof FormData),
+  );
+  const accessToken = await getSupabaseAccessToken();
+  if (accessToken && !headers.Authorization) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+
   let response: Response;
   try {
     response = await fetch(`/api/backend/${path}`, {
       method: options.method ?? "GET",
-      headers: backendHeaders(connection, options.body !== undefined && !(options.body instanceof FormData)),
+      headers,
       body:
         options.body instanceof FormData
           ? options.body

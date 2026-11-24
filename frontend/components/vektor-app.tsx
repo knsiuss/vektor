@@ -43,6 +43,7 @@ import { Composer } from "./composer";
 import { ConfirmDialog } from "./drawer";
 import { Activity, BarChart3, BookOpen, ChevronRight, Cpu, Search, Settings, SidebarToggle, VektorLogo } from "./icons";
 import { KnowledgeView } from "./knowledge-view";
+import { LoginScreen } from "./login-screen";
 import { ProfileModal } from "./profile-modal";
 import { DEFAULT_CONNECTION, SettingsView } from "./settings-view";
 import { Sidebar } from "./sidebar";
@@ -126,6 +127,8 @@ export function VektorApp() {
   const [connection, setConnection] = useState<Connection>({ ...DEFAULT_CONNECTION });
   const [check, setCheck] = useState<ConnectionCheck>(CHECKING);
   const [me, setMe] = useState<Me | null>(null);
+  const [authState, setAuthState] = useState<"checking" | "ready" | "required">("checking");
+  const [authReason, setAuthReason] = useState<string | null>(null);
 
   const [view, setView] = useState<View>("chat");
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -205,7 +208,32 @@ export function VektorApp() {
     if (hydrated) document.documentElement.dataset.theme = theme;
   }, [theme, hydrated]);
 
-  // Verify the backend whenever the connection changes.
+  // Ask the backend who we are; a 401 means OAuth login is required on this deployment.
+  useEffect(() => {
+    if (!hydrated) return;
+    let cancelled = false;
+    api<{ user_id: string }>("auth/me", connection, { retries: 0 })
+      .then(() => {
+        if (!cancelled) setAuthState("ready");
+      })
+      .catch((cause) => {
+        if (cancelled) return;
+        const status = cause instanceof ApiError ? cause.status : 0;
+        setAuthState(status === 401 ? "required" : "ready");
+        if (status === 401) {
+          setAuthReason(
+            new URLSearchParams(window.location.search).get("login") === "failed"
+              ? "The provider did not accept the sign-in. Please try again."
+              : null,
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [connection, hydrated]);
+
+    // Verify the backend whenever the connection changes.
   useEffect(() => {
     if (!hydrated) return;
     let cancelled = false;
@@ -575,11 +603,13 @@ export function VektorApp() {
   }, [connection, record]);
 
   const signOut = useCallback(() => {
+    void api("auth/logout", connection, { method: "POST" }).catch(() => undefined);
     const next = { ...connection, apiKey: "" };
     persistConnection(next);
     setConnection(next);
     setMe(null);
     setProfileOpen(false);
+    setAuthState("required");
     setView("settings");
     record("Signed out", "auth");
   }, [connection, record]);
@@ -611,6 +641,10 @@ export function VektorApp() {
     },
     [activeId, connection],
   );
+
+  if (authState === "required") {
+    return <LoginScreen connection={connection} reason={authReason} />;
+  }
 
   return (
     <div className={`app ${view === "chat" ? "" : "is-workspace"}`}>

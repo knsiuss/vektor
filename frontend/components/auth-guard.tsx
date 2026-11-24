@@ -24,7 +24,8 @@ export function incrementGuestPromptCount(): number {
 
 export function AuthGuard({ children }: { children: ReactNode }) {
   const router = useRouter();
-  const configured = isSupabaseConfigured();
+  const devBypass = process.env.NEXT_PUBLIC_DEV_BYPASS_AUTH === "true";
+  const configured = isSupabaseConfigured() && !devBypass;
   const [signedIn, setSignedIn] = useState(false);
 
   useEffect(() => {

@@ -10,6 +10,7 @@
 - **Knowledge base (RAG).** Upload PDF, DOCX, Markdown, text, CSV, JSON, and images. Documents are chunked, embedded, and searched with a hybrid semantic + lexical ranking, then reranked.
 - **Answer verification without extra LLM calls.** Citations (`[n]`) are checked against the retrieved sources, and commands, hostnames, and error codes in an answer are checked against the context.
 - **Tools with a safety gate.** Built-in read-only tools (`get_system_health`, `get_token_usage_report`, `search_knowledge_base`). Tools that change things are blocked unless the request explicitly allows them.
+- **Web evidence without an API key.** `web_search` (SearXNG public instances, or your own) and `web_fetch` (SSRF-guarded, size- and type-limited). Fetched pages appear as citations with domain and retrieval date, and page text is treated as untrusted data.
 - **Multi-tenant and multi-user.** Per-user API keys (stored hashed), `member` and `admin` roles, and conversations and documents scoped to their owner. Cross-tenant access returns `404`.
 - **Document sharing.** Each document is `private`, visible to the whole `tenant`, or `shared` with specific users.
 - **Admin oversight with an audit trail.** Tenant admins can read or delete other users' conversations, and every such access is written to an audit log.
@@ -38,6 +39,8 @@
 └── scope.md            Product scope and long-term direction
 ```
 
+For diagrams of how these parts fit together (request flow, RAG pipeline, access rules, data model, frontend), see [`docs/architecture.md`](docs/architecture.md).
+
 ## Quick start
 
 **Requirements:** Python 3.12, [uv](https://docs.astral.sh/uv/), Node.js 20+ (for the web UI), and an API key for an OpenAI-compatible provider.
@@ -64,10 +67,10 @@ In `development` with no API keys configured, the API is open and every request 
 ```bash
 cd frontend
 npm install
-npm run dev
+npm run dev        # starts the backend (uvicorn --reload) and Next.js together
 ```
 
-Open <http://localhost:3000>. The UI talks to the backend through a same-origin proxy. The default backend is `http://127.0.0.1:8000`, and you can change it, plus your API key, timeout, and retries, on the **Connection Settings** page.
+Open <http://localhost:3000>. The UI talks to the backend through a same-origin proxy. The default backend is `http://127.0.0.1:8000`, and you can change it, plus your API key, timeout, and retries, on the **Connection Settings** page. Use `npm run dev:next` if you only want the web app and already run the backend yourself.
 
 ## Configuration
 
@@ -90,6 +93,9 @@ All settings are environment variables with the `VEKTOR_` prefix, read from `.en
 | `VEKTOR_RATE_LIMIT_PER_MINUTE` | `60` | Per-user request limit. |
 | `VEKTOR_AGENT_MAX_HISTORY_TOKENS` | `3500` | Conversation history budget sent to the model. |
 | `VEKTOR_RETRIEVAL_MAX_CONTEXT_TOKENS` | `2000` | Budget for retrieved document context. |
+| `VEKTOR_WEB_SEARCH_PROVIDER` | `searxng` | Web search backend: `searxng` (no key) or `duckduckgo`. |
+| `VEKTOR_WEB_SEARXNG_URL` | none | Your own SearXNG JSON endpoint; empty uses public instances. |
+| `VEKTOR_WEB_MAX_SEARCHES`, `VEKTOR_WEB_MAX_FETCHES` | `3`, `3` | Per-turn web call limits. |
 
 Outside `development`, startup fails unless `VEKTOR_API_KEYS` is set. In `production`, startup also fails if `VEKTOR_DEBUG` is on, and the API docs are turned off.
 

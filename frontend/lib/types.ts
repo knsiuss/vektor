@@ -25,6 +25,8 @@ export type Message = {
   reasoning?: string | null;
   status?: "answer" | "clarify" | "unknown" | null;
   clarify_options?: string[] | null;
+  /** Assistant notice for a turn the provider could not answer (rate limit, timeout, outage). */
+  error?: boolean;
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
@@ -51,6 +53,10 @@ export type Citation = {
   semantic_score: number;
   lexical_score: number;
   score: number;
+  /** Web pages reuse the citation shape so one renderer covers both. */
+  kind?: "document" | "web";
+  url?: string | null;
+  retrieved_at?: string | null;
 };
 
 export type ChatResponse = {
@@ -93,9 +99,13 @@ export type KnowledgeDocument = {
   created_at: string;
   owner_id?: string;
   visibility?: "private" | "tenant" | "shared";
+  source_url?: string | null;
+  last_synced_at?: string | null;
+  is_stale?: boolean;
 };
 
 export type Usage = {
+  by_status?: Record<string, number>;
   total_conversations: number;
   total_messages: number;
   prompt_tokens: number;
@@ -147,6 +157,25 @@ export type ToolUsageReport = {
   tools: ToolUsageItem[];
 };
 
+export type BudgetStatus = {
+  month: string;
+  limit_tokens: number | null;
+  used_tokens: number;
+  ratio: number;
+  state: "unlimited" | "ok" | "warning" | "exhausted";
+};
+
+export type FeedbackItem = {
+  id: string;
+  conversation_id: string;
+  conversation_title: string | null;
+  message_id: string;
+  excerpt: string;
+  rating: "up" | "down";
+  comment: string | null;
+  created_at: string;
+};
+
 export type Me = {
   user_id: string;
   tenant_id: string;
@@ -161,10 +190,22 @@ export type ReasoningEffort = "low" | "medium" | "high";
 export type ChatRequest = {
   message: string;
   conversation_id?: string;
+  model?: string;
+  provider_profile_id?: string;
   retrieval_mode: RetrievalMode;
   document_ids?: string[];
   allow_mutating_tools: boolean;
   reasoning_effort?: ReasoningEffort | null;
+};
+
+export type ProviderProfile = {
+  id: string;
+  label: string;
+  provider: string;
+  model: string;
+  base_url: string | null;
+  api_key_configured: boolean;
+  is_default: boolean;
 };
 
 export type Connection = {

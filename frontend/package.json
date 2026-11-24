@@ -4,7 +4,8 @@
   "license": "Apache-2.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/dev.mjs",
+    "dev:next": "next dev",
     "build": "next build",
     "start": "next start",
     "test": "vitest run",
@@ -12,6 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.119.2",
     "katex": "^0.19.1",
     "lucide-react": "^0.468.0",
     "mermaid": "^12.3.0",

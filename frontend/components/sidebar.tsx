@@ -26,8 +26,8 @@ type ConversationSummary = { id: string; title: string; updated_at: string };
 export function Sidebar({
   open,
   onClose,
-  collapsed,
-  onToggleCollapse,
+  hidden,
+  onHide,
   conversations,
   loading,
   error,
@@ -47,8 +47,8 @@ export function Sidebar({
   conversations: ConversationSummary[];
   open: boolean;
   onClose: () => void;
-  collapsed: boolean;
-  onToggleCollapse: () => void;
+  hidden: boolean;
+  onHide: () => void;
   loading: boolean;
   error: string | null;
   activeId: string | null;
@@ -89,7 +89,7 @@ export function Sidebar({
   return (
     <>
       {open && <button className="sidebar-scrim" aria-label="Close navigation" onClick={onClose} />}
-      <aside className={`sidebar ${open ? "is-open" : ""} ${collapsed ? "is-collapsed" : ""}`}>
+      <aside className={`sidebar ${open ? "is-open" : ""} ${hidden ? "is-hidden" : ""}`}>
         <div className="brand-row">
           <div className="brand"><VektorLogo size={37} /><span className="sidebar-label">Vektor</span></div>
           <div className="brand-actions">
@@ -100,7 +100,7 @@ export function Sidebar({
             >
               {theme === "dark" ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
             </IconButton>
-            <IconButton label={collapsed ? "Expand sidebar" : "Collapse sidebar"} onClick={onToggleCollapse} className="desktop-toggle"><SidebarToggle /></IconButton>
+            <IconButton label="Hide sidebar" onClick={onHide} className="desktop-toggle"><SidebarToggle /></IconButton>
             <IconButton label="Close navigation" onClick={onClose} className="mobile-menu-button"><SidebarToggle /></IconButton>
           </div>
         </div>

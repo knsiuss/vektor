@@ -7,7 +7,22 @@ from starlette.responses import StreamingResponse
 
 from api.auth import resolve_principal
 from api.middleware import request_context_middleware
-from api.routers import admin, chat, conversations, gateway, knowledge, mcp, me, providers, usage, workflows
+from api.routers import (
+    admin,
+    chat,
+    conversations,
+    gateway,
+    keys,
+    knowledge,
+    mcp,
+    me,
+    providers,
+    usage,
+    workflows,
+)
+from api.routers import (
+    auth as auth_router,
+)
 from api.security import (
     SlidingWindowRateLimiter,
     build_rate_limited_response,
@@ -16,10 +31,13 @@ from api.security import (
 )
 from core.config.settings import Settings, get_settings
 from core.database import create_engine, create_session_factory, init_db
+from modules.billing import models as _billing_models  # noqa: F401
 from modules.conversations import models as _conversation_models  # noqa: F401
 from modules.identity import models as _identity_models  # noqa: F401
 from modules.knowledge import models as _knowledge_models  # noqa: F401
+from modules.llm_gateway import models as _gateway_models  # noqa: F401
 from modules.settings import models as _settings_models  # noqa: F401
+from modules.settings import profile_models as _profile_models  # noqa: F401
 from modules.usage import models as _usage_models  # noqa: F401
 from modules.usage.recorder import UsageRecorder
 from modules.workflows import models as _workflow_models  # noqa: F401
@@ -38,9 +56,9 @@ async def _flush_usage(request: Request, response: Response) -> None:
     if isinstance(response, StreamingResponse):
         original = response.body_iterator
 
-        async def _drain() -> AsyncIterator[bytes]:
+        async def _drain() -> AsyncIterator[str | bytes | memoryview]:
             try:
-                async for chunk in original:  # type: ignore[union-attr]
+                async for chunk in original:
                     yield chunk
             finally:
                 await recorder.flush()
@@ -97,13 +115,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if request.url.path == "/health":
             return await call_next(request)
 
-        presented_key = extract_presented_api_key(request)
-        principal = await resolve_principal(
-            presented_key=presented_key,
-            legacy_keys=valid_api_keys,
-            allow_open=allow_open_access,
-            session_factory=application.state.session_factory,
-        )
+        # Public login endpoints run before a session exists; /auth/me and /auth/logout
+        # still resolve normally so development open access keeps working.
+        path = request.url.path
+        if path == "/api/v1/auth/providers" or (
+            path.startswith("/api/v1/auth/")
+            and (path.endswith("/start") or path.endswith("/callback"))
+        ):
+            return await call_next(request)
+
+        from modules.identity.supabase_auth import extract_bearer_jwt, verify_supabase_jwt
+
+        bearer_jwt = extract_bearer_jwt(request)
+        if bearer_jwt is not None:
+            principal = verify_supabase_jwt(bearer_jwt)
+        else:
+            presented_key = extract_presented_api_key(request)
+            principal = await resolve_principal(
+                presented_key=presented_key,
+                session_token=request.cookies.get("vektor_session"),
+                legacy_keys=valid_api_keys,
+                allow_open=allow_open_access,
+                session_factory=application.state.session_factory,
+            )
         if principal is None:
             return build_unauthorized_response()
         request.state.principal = principal
@@ -120,6 +154,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return response
 
     application.middleware("http")(request_context_middleware)
+    application.include_router(auth_router.router)
     application.include_router(chat.router)
     application.include_router(conversations.router)
     application.include_router(knowledge.router)
@@ -130,6 +165,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(workflows.router)
     application.include_router(mcp.router)
     application.include_router(gateway.router)
+    application.include_router(keys.router)
 
     @application.get("/health", tags=["system"])
     async def health_check() -> dict[str, str]:

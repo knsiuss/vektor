@@ -5,9 +5,19 @@ import { useCallback, useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
 import { formatCompact, percentChange } from "@/lib/format";
-import type { Connection, Timeseries, ToolUsageReport, Usage } from "@/lib/types";
+import type {
+  BudgetStatus,
+  Connection,
+  FeedbackItem,
+  Timeseries,
+  ToolUsageReport,
+  Usage,
+} from "@/lib/types";
 
+import { BudgetMeter } from "./budget-meter";
 import { DONUT_COLORS, Donut, Sparkline, UsageChart } from "./charts";
+import { ReplyQualityCard } from "./reply-quality-card";
+import { FeedbackPanel } from "./feedback-panel";
 import { Calendar, Info, Layers, LoaderCircle, MessageSquare, Wrench, Zap } from "./icons";
 
 const RANGES = [7, 30, 90] as const;
@@ -47,6 +57,8 @@ export function TelemetryView({ connection }: { connection: Connection }) {
   const [usage, setUsage] = useState<Usage | null>(null);
   const [series, setSeries] = useState<Timeseries | null>(null);
   const [toolReport, setToolReport] = useState<ToolUsageReport | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackItem[]>([]);
+  const [budget, setBudget] = useState<BudgetStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
@@ -55,14 +67,18 @@ export function TelemetryView({ connection }: { connection: Connection }) {
     if (!quiet) setLoading(true);
     setError("");
     try {
-      const [usageData, seriesData, toolsData] = await Promise.all([
+      const [usageData, seriesData, toolsData, feedbackData, budgetData] = await Promise.all([
         api<Usage>("usage", connection),
         api<Timeseries>(`usage/timeseries?days=${days}`, connection),
         api<ToolUsageReport>(`usage/tools?days=${days}&limit=6`, connection).catch(() => null),
+        api<FeedbackItem[]>("usage/feedback?limit=8", connection).catch(() => []),
+        api<BudgetStatus>("usage/budget", connection).catch(() => null),
       ]);
       setUsage(usageData);
       setSeries(seriesData);
       setToolReport(toolsData);
+      setFeedback(feedbackData);
+      setBudget(budgetData);
       setUpdatedAt(new Date());
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load usage data.");
@@ -81,6 +97,7 @@ export function TelemetryView({ connection }: { connection: Connection }) {
   const hasActivity = points.some((point) => point.messages > 0 || point.tokens > 0);
 
   const models = usage?.by_model ?? [];
+  const byStatus = usage?.by_status ?? {};
   const totalTokens = models.reduce((sum, item) => sum + item.total_tokens, 0);
   const segments = [
     ...models.slice(0, 3).map((item) => ({ label: item.model, value: item.total_tokens })),
@@ -122,6 +139,8 @@ export function TelemetryView({ connection }: { connection: Connection }) {
             <Kpi icon={<Layers size={22} />} label="Total Messages" value={series?.current.messages ?? 0} previous={series?.previous.messages ?? 0} values={points.map((p) => p.messages)} />
             <Kpi icon={<Zap size={22} />} label="Total Tokens" value={series?.current.tokens ?? 0} previous={series?.previous.tokens ?? 0} values={points.map((p) => p.tokens)} />
           </div>
+
+          <ReplyQualityCard byStatus={byStatus} />
 
           <section className="v-card" aria-labelledby="overview-title">
             <div className="v-card-head">
@@ -196,6 +215,10 @@ export function TelemetryView({ connection }: { connection: Connection }) {
               )}
             </section>
           </div>
+
+          <BudgetMeter budget={budget} />
+
+          <FeedbackPanel items={feedback} />
 
           <div className="v-note" role="status">
             <Info size={18} aria-hidden="true" />

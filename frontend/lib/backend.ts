@@ -27,7 +27,28 @@ const routes: Record<string, string[]> = {
   "providers/models": ["POST"],
   "providers/test": ["POST"],
   "providers/api-key": ["DELETE"],
+  "providers/profiles": ["GET", "POST"],
+  "providers/profiles/:id": ["DELETE"],
+  "providers/profiles/:id/models": ["POST"],
+  keys: ["GET", "POST"],
+  "keys/:id": ["DELETE"],
+  "keys/:id/rotate": ["POST"],
+  "tenant/policy": ["GET", "PUT"],
+  "credits/balance": ["GET"],
+  "credits/grant": ["POST"],
+  workflows: ["GET", "POST"],
+  "workflows/:id": ["DELETE"],
+  "workflows/runs": ["GET"],
+  "workflows/:id/runs": ["POST"],
+  "workflows/runs/:id/approve": ["POST"],
+  "mcp/resources": ["GET"],
+  "mcp/tools/call": ["POST"],
   health: ["GET"],
+  "auth/providers": ["GET"],
+  "auth/me": ["GET"],
+  "auth/logout": ["POST"],
+  "auth/:id/start": ["GET"],
+  "auth/:id/callback": ["GET"],
 };
 
 export function buildBackendRequest(input: BackendRequest): ResolvedRequest {
@@ -47,9 +68,12 @@ export function buildBackendRequest(input: BackendRequest): ResolvedRequest {
     );
   });
 
+  const isUuid = !id || /^[a-f\d-]{36}$/i.test(id);
+  // OAuth routes carry a provider name ("google"/"github"), not a record id.
+  const isProvider = Boolean(match?.startsWith("auth/")) && /^[a-z]{3,16}$/i.test(id);
   if (
     !match ||
-    (id && !/^[a-f\d-]{36}$/i.test(id)) ||
+    (!isUuid && !isProvider) ||
     !routes[match].includes(input.method) ||
     input.path.some((part) => !part || part === "." || part === "..")
   ) {

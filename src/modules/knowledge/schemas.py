@@ -15,6 +15,7 @@ class DocumentIngestInput(BaseModel):
     content: str = Field(min_length=1, max_length=200_000)
     source: str = Field(default="manual", min_length=1, max_length=255)
     visibility: Visibility = "private"
+    source_url: str | None = Field(default=None, max_length=512)
 
 
 class DocumentSummary(BaseModel):
@@ -30,6 +31,9 @@ class DocumentSummary(BaseModel):
     created_at: datetime
     owner_id: str = ""
     visibility: str = "private"
+    source_url: str | None = None
+    last_synced_at: datetime | None = None
+    is_stale: bool = False
 
 
 class VisibilityUpdate(BaseModel):
@@ -82,3 +86,10 @@ class RetrievedChunk(BaseModel):
     semantic_score: float
     lexical_score: float
     score: float
+    # Web pages reuse this shape so citations, grounding checks and the UI share one path.
+    kind: Literal["document", "web"] = "document"
+    url: str | None = None
+    retrieved_at: str | None = None
+    # Populated by retrieval merges; optional so older callers keep working.
+    section: str | None = None
+    updated_at: datetime | None = None

@@ -29,6 +29,10 @@ async function forward(
   if (contentType) headers.set("content-type", contentType);
   if (resolved.apiKey) headers.set("x-api-key", resolved.apiKey);
 
+  // OAuth uses the same origin as the app, so the browser cookie must travel both ways.
+  const cookie = request.headers.get("cookie");
+  if (cookie) headers.set("cookie", cookie);
+
   const encodedExtra = request.headers.get("x-vektor-extra-headers");
   if (encodedExtra) {
     try {
@@ -53,15 +57,26 @@ async function forward(
       headers,
       body,
       cache: "no-store",
+      redirect: "manual",
       signal: request.signal,
     });
-    return new NextResponse(upstream.body, {
+
+    const responseHeaders = new Headers({
+      "content-type": upstream.headers.get("content-type") ?? "application/json",
+      "cache-control": "no-store, no-transform",
+      "x-accel-buffering": "no",
+    });
+    const location = upstream.headers.get("location");
+    if (location) responseHeaders.set("location", location);
+    for (const cookieHeader of upstream.headers.getSetCookie()) {
+      responseHeaders.append("set-cookie", cookieHeader);
+    }
+
+    const bodyless =
+      upstream.status === 204 || upstream.status === 304 || Boolean(location);
+    return new NextResponse(bodyless ? null : upstream.body, {
       status: upstream.status,
-      headers: {
-        "content-type": upstream.headers.get("content-type") ?? "application/json",
-        "cache-control": "no-store, no-transform",
-        "x-accel-buffering": "no",
-      },
+      headers: responseHeaders,
     });
   } catch (error) {
     if (request.signal.aborted) return new NextResponse(null, { status: 499 });
@@ -73,4 +88,4 @@ async function forward(
   }
 }
 
-export { forward as DELETE, forward as GET, forward as POST };
+export { forward as DELETE, forward as GET, forward as PATCH, forward as POST, forward as PUT };

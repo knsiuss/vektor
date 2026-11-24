@@ -51,7 +51,10 @@ def verify_grounding(
         elif idx not in invalid_citations:
             invalid_citations.append(idx)
 
-    has_context_without_citations = bool(citations) and not cited_indices
+    # Web pages are evidence too, but "no [n] citation" only applies to retrieved documents;
+    # a web-only answer is not expected to cite chunks it never received up front.
+    document_citations = [chunk for chunk in citations if chunk.kind != "web"]
+    has_context_without_citations = bool(document_citations) and not cited_indices
 
     haystack = "\n".join(
         [*(chunk.content for chunk in citations), *(chunk.document_title for chunk in citations), *tool_outputs]

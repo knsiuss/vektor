@@ -37,6 +37,12 @@ class KnowledgeDocument(Base):
         nullable=False,
         default=_utc_now,
     )
+    source_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    last_synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utc_now,
+    )
 
     chunks: Mapped[list["KnowledgeChunk"]] = relationship(
         back_populates="document",

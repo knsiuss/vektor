@@ -1,7 +1,7 @@
 import re
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, delete, func, select, text
+from sqlalchemy import ColumnElement, and_, delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -33,7 +33,7 @@ class ConversationRepository:
         self._session = session
         self._principal = principal or DEV_PRINCIPAL
 
-    def _scope(self, *, tenant_wide: bool = False):
+    def _scope(self, *, tenant_wide: bool = False) -> ColumnElement[bool]:
         """Conversations the caller may see: own threads, or the whole tenant for admins."""
         clauses = [Conversation.tenant_id == self._principal.tenant_id]
         if not tenant_wide:
@@ -239,6 +239,20 @@ class ConversationRepository:
             for row in rows
         ]
 
+        status_rows = (
+            await self._session.execute(
+                select(ConversationMessage.status, func.count(ConversationMessage.id))
+                .join(Conversation, Conversation.id == ConversationMessage.conversation_id)
+                .where(
+                    ConversationMessage.role == "assistant",
+                    ConversationMessage.status.is_not(None),
+                    scope,
+                )
+                .group_by(ConversationMessage.status)
+            )
+        ).all()
+        by_status = {str(status): int(count) for status, count in status_rows}
+
         return UsageSummary(
             total_conversations=int(conv_count),
             total_messages=int(msg_count),
@@ -246,6 +260,7 @@ class ConversationRepository:
             completion_tokens=sum(item.completion_tokens for item in breakdown),
             total_tokens=sum(item.total_tokens for item in breakdown),
             by_model=breakdown,
+            by_status=by_status,
         )
 
     async def search_messages(

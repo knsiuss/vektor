@@ -40,10 +40,10 @@ import type {
 
 import { ChatMessage, PendingMessage } from "./chat-message";
 import { Composer } from "./composer";
-import { ContextMeter } from "./context-meter";
 import { ConfirmDialog } from "./drawer";
-import { Activity, BarChart3, BookOpen, ChevronRight, Cpu, Search, Settings, VektorLogo } from "./icons";
+import { Activity, BarChart3, BookOpen, ChevronRight, Cpu, Search, Settings, SidebarToggle, VektorLogo } from "./icons";
 import { KnowledgeView } from "./knowledge-view";
+import { LoginScreen } from "./login-screen";
 import { ProfileModal } from "./profile-modal";
 import { DEFAULT_CONNECTION, SettingsView } from "./settings-view";
 import { Sidebar } from "./sidebar";
@@ -127,10 +127,12 @@ export function VektorApp() {
   const [connection, setConnection] = useState<Connection>({ ...DEFAULT_CONNECTION });
   const [check, setCheck] = useState<ConnectionCheck>(CHECKING);
   const [me, setMe] = useState<Me | null>(null);
+  const [authState, setAuthState] = useState<"checking" | "ready" | "required">("checking");
+  const [authReason, setAuthReason] = useState<string | null>(null);
 
   const [view, setView] = useState<View>("chat");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
+  const [sidebarHidden, setSidebarHidden] = useState(true);
   const [profileOpen, setProfileOpen] = useState(false);
   const [theme, setTheme] = useState<Theme>("dark");
   const [customName, setCustomName] = useState<string | null>(null);
@@ -154,6 +156,9 @@ export function VektorApp() {
 
   const [retrievalMode, setRetrievalMode] = useState<RetrievalMode>("auto");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort | null>(null);
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  const [modelContextLength, setModelContextLength] = useState<number | null>(null);
   const [documentScope, setDocumentScope] = useState("");
   const [allowMutatingTools, setAllowMutatingTools] = useState(false);
   const [composerValue, setComposerValue] = useState("");
@@ -203,7 +208,32 @@ export function VektorApp() {
     if (hydrated) document.documentElement.dataset.theme = theme;
   }, [theme, hydrated]);
 
-  // Verify the backend whenever the connection changes.
+  // Ask the backend who we are; a 401 means OAuth login is required on this deployment.
+  useEffect(() => {
+    if (!hydrated) return;
+    let cancelled = false;
+    api<{ user_id: string }>("auth/me", connection, { retries: 0 })
+      .then(() => {
+        if (!cancelled) setAuthState("ready");
+      })
+      .catch((cause) => {
+        if (cancelled) return;
+        const status = cause instanceof ApiError ? cause.status : 0;
+        setAuthState(status === 401 ? "required" : "ready");
+        if (status === 401) {
+          setAuthReason(
+            new URLSearchParams(window.location.search).get("login") === "failed"
+              ? "The provider did not accept the sign-in. Please try again."
+              : null,
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [connection, hydrated]);
+
+    // Verify the backend whenever the connection changes.
   useEffect(() => {
     if (!hydrated) return;
     let cancelled = false;
@@ -275,6 +305,7 @@ export function VektorApp() {
   const selectConversation = useCallback(async (id: string) => {
     setView("chat");
     setActiveId(id);
+    setSidebarHidden(true);
     stickToBottom.current = true;
     setChatError(null);
     closeMobileSidebar();
@@ -290,6 +321,7 @@ export function VektorApp() {
   const startNewSession = useCallback(() => {
     setView("chat");
     setActiveId(null);
+    setSidebarHidden(true);
     setMessages([]);
     setContext(null);
     setChatError(null);
@@ -352,7 +384,8 @@ export function VektorApp() {
     abortRef.current = controller;
     stopRequested.current = false;
     // Messages the server already holds, to recognise when it has also saved a stopped turn.
-    const knownOnServer = messages.filter((item) => !/^(pending|stopped)-/.test(item.id)).length;
+    // Turns that failed or were stopped only exist in the transcript, so they cannot be counted.
+    const knownOnServer = messages.filter((item) => !/^(pending|stopped|failed)-/.test(item.id)).length;
     const patchLive = (patch: Partial<LiveTurn>) =>
       setLive((current) => (current ? { ...current, ...patch } : current));
     let revealed = "";
@@ -441,6 +474,8 @@ export function VektorApp() {
       const payload: ChatRequest = {
         message: text,
         conversation_id: activeId ?? undefined,
+        ...(selectedModel ? { model: selectedModel } : {}),
+        ...(selectedProfileId ? { provider_profile_id: selectedProfileId } : {}),
         retrieval_mode: retrievalMode,
         ...(retrievalMode === "explicit" && documentScope ? { document_ids: [documentScope] } : {}),
         allow_mutating_tools: allowMutatingTools || !!approve,
@@ -498,10 +533,21 @@ export function VektorApp() {
           void adoptSavedTurn();
         }
       } else {
-        setMessages((current) => current.filter((item) => !item.id.startsWith("pending-")));
-        // Give the question back so the user can retry without retyping it.
-        setComposerValue((current) => current || text);
-        setChatError(cause instanceof Error ? cause.message : "Could not send message. Check your connection settings.");
+        // The provider could not answer, but the question was sent: keep it in the transcript
+        // and show the provider's reason as an assistant notice instead of a toast.
+        const stamp = Date.now();
+        const failure = cause instanceof Error ? cause.message : "Could not send message. Check your connection settings.";
+        setMessages((current) => [
+          ...current.map((item) => (item.id.startsWith("pending-") ? { ...item, id: `failed-user-${stamp}` } : item)),
+          {
+            id: `failed-assistant-${stamp}`,
+            role: "assistant",
+            content: failure,
+            model: null,
+            created_at: new Date().toISOString(),
+            error: true,
+          },
+        ]);
       }
     } finally {
       if (runId.current === myRun) {
@@ -557,11 +603,13 @@ export function VektorApp() {
   }, [connection, record]);
 
   const signOut = useCallback(() => {
+    void api("auth/logout", connection, { method: "POST" }).catch(() => undefined);
     const next = { ...connection, apiKey: "" };
     persistConnection(next);
     setConnection(next);
     setMe(null);
     setProfileOpen(false);
+    setAuthState("required");
     setView("settings");
     record("Signed out", "auth");
   }, [connection, record]);
@@ -594,14 +642,18 @@ export function VektorApp() {
     [activeId, connection],
   );
 
+  if (authState === "required") {
+    return <LoginScreen connection={connection} reason={authReason} />;
+  }
+
   return (
     <div className={`app ${view === "chat" ? "" : "is-workspace"}`}>
       {view === "chat" && (
       <Sidebar
         open={sidebarOpen}
-        collapsed={collapsed}
+        hidden={sidebarHidden}
         onClose={() => setSidebarOpen(false)}
-        onToggleCollapse={() => setCollapsed((value) => !value)}
+        onHide={() => setSidebarHidden(true)}
         conversations={conversations}
         loading={loadingConversations}
         error={conversationsError}
@@ -620,6 +672,16 @@ export function VektorApp() {
       />
       )}
       <main ref={mainRef} onScroll={handleMainScroll} className={view === "chat" ? "" : "view-main"}>
+        {view === "chat" && sidebarHidden && (
+          <button
+            type="button"
+            className="sidebar-open-button"
+            aria-label="Show navigation"
+            onClick={() => setSidebarHidden(false)}
+          >
+            <SidebarToggle />
+          </button>
+        )}
         {view === "chat" && (
           <header className="mobile-topbar">
             <button className="icon-button" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}>
@@ -634,7 +696,7 @@ export function VektorApp() {
               <div className="chat-area">
                 <div className="messages">
                   {messages.map((message) => (
-                    <div className="message" key={message.id}>
+                    <div className={`message ${message.role === "user" ? "is-user" : ""}`} key={message.id}>
                       <ChatMessage
                         message={message}
                         onApprove={() => {
@@ -650,7 +712,7 @@ export function VektorApp() {
                       />
                     </div>
                   ))}
-                  {live && (live.text ? (
+                  {live && (live.text || live.reasoning ? (
                     <>
                       <div className="message" key="live">
                         <ChatMessage
@@ -702,13 +764,6 @@ export function VektorApp() {
                 <button className="text-button" onClick={() => setChatError(null)}>Dismiss</button>
               </div>
             )}
-            {context && context.total_messages > 0 && (
-              <ContextMeter
-                context={context}
-                compacting={compacting}
-                onCompact={() => void compactHistory()}
-              />
-            )}
             <Composer
               value={composerValue}
               onValueChange={setComposerValue}
@@ -725,7 +780,18 @@ export function VektorApp() {
               reasoningEffort={reasoningEffort}
               onReasoningEffortChange={setReasoningEffort}
               onStop={stopChat}
-              model={check.model}
+              model={selectedModel || check.model}
+              modelContextLength={modelContextLength}
+              context={context}
+              compacting={compacting}
+              onCompact={() => void compactHistory()}
+              connection={connection}
+              activeProfileId={selectedProfileId}
+              onSelectModel={(nextModel, nextProfileId, ctxLen) => {
+                setSelectedModel(nextModel);
+                setSelectedProfileId(nextProfileId);
+                setModelContextLength(ctxLen ?? null);
+              }}
               onOpenSettings={() => navigate("settings")}
             />
           </>

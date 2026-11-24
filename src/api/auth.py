@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from api.security import verify_api_key
+from modules.identity.oauth_repo import OAuthRepository
 from modules.identity.principal import (
     DEFAULT_TENANT_ID,
     DEV_PRINCIPAL,
@@ -14,6 +15,7 @@ from modules.identity.repository import ApiKeyRepository, parse_roles
 async def resolve_principal(
     *,
     presented_key: str | None,
+    session_token: str | None = None,
     legacy_keys: tuple[str, ...],
     allow_open: bool,
     session_factory: async_sessionmaker[AsyncSession],
@@ -23,6 +25,12 @@ async def resolve_principal(
     Order: per-user database key, then legacy shared keys from VEKTOR_API_KEYS (mapped to a
     member of the default tenant), then open development access. Fails closed otherwise.
     """
+    if session_token:
+        async with session_factory() as session:
+            principal = await OAuthRepository(session).resolve(session_token)
+        if principal is not None:
+            return principal
+
     if presented_key:
         key_hash = hash_api_key(presented_key)
         async with session_factory() as session:

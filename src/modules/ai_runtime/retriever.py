@@ -16,7 +16,9 @@ RetrievalMode = Literal["auto", "always", "explicit", "off"]
 ConfidenceLevel = Literal["high", "low", "empty", "none"]
 
 _CHITCHAT_RE = re.compile(
-    r"^(hi|hello|hey|halo|hai|pagi|siang|sore|malam|thanks|thank you|terima kasih|ok|oke)[!.? ]*$",
+    r"^(?:hi|hello|hey|halo|hai|hola|gola|yo|ping|test|tes|bro|hey bro|halo bro|"
+    r"pagi|siang|sore|malam|selamat pagi|selamat siang|selamat sore|selamat malam|"
+    r"apa kabar|siapa kamu|thanks|thank you|terima kasih|makasih|ok|oke|sip|siap)[!.? ]*$",
     re.IGNORECASE,
 )
 _DOC_PREFIX_RE = re.compile(r"^\[Doc: [^\]]+\]\n")
@@ -36,10 +38,12 @@ class RetrievalOutcome:
     searched: bool
     rewritten: bool = False
     confidence: ConfidenceLevel = "none"
+    # The rewrite pass judged the request to have more than one plausible reading.
+    ambiguous: bool = False
 
 
 class KnowledgeRetriever:
-    """Executes multi-stage Agentic RAG: decomposition, conditional rewrite, BM25+RRF, rerank, and parent expansion."""
+    """Multi-stage Agentic RAG: decomposition, rewrite, BM25+RRF, rerank, parent expansion."""
 
     def __init__(
         self,
@@ -50,6 +54,12 @@ class KnowledgeRetriever:
         self._repo = knowledge_repo
         self._llm = llm_provider
         self._settings = get_settings()
+
+    def should_search(self, user_message: str, *, mode: RetrievalMode) -> bool:
+        """Return False when retrieval is disabled or the input is casual chitchat in auto mode."""
+        if mode == "off":
+            return False
+        return not (mode == "auto" and _CHITCHAT_RE.match(user_message.strip()))
 
     async def retrieve(
         self,
@@ -143,15 +153,23 @@ class KnowledgeRetriever:
             final_chunks = await self._finalize_candidates(user_message, raw_hits, top_k=top_k)
             return self._build_outcome(final_chunks, searched=True, rewritten=False)
 
-        rewritten_query = await self._rewrite_query_agentically(
+        rewritten_query, ambiguous = await self._rewrite_query_agentically(
             user_message,
             recent_history=recent_history,
         )
         if rewritten_query == "NO_SEARCH":
             if raw_hits:
                 final_chunks = await self._finalize_candidates(user_message, raw_hits, top_k=top_k)
-                return self._build_outcome(final_chunks, searched=True, rewritten=True)
-            return RetrievalOutcome(chunks=[], searched=False, rewritten=True, confidence="none")
+                return self._build_outcome(
+                    final_chunks, searched=True, rewritten=True, ambiguous=ambiguous
+                )
+            return RetrievalOutcome(
+                chunks=[],
+                searched=False,
+                rewritten=True,
+                confidence="none",
+                ambiguous=ambiguous,
+            )
 
         rewritten_hits = await self._search_stage1(
             queries=[rewritten_query],
@@ -164,7 +182,9 @@ class KnowledgeRetriever:
         )
         chosen = rewritten_hits if rewritten_hits else raw_hits
         final_chunks = await self._finalize_candidates(user_message, chosen, top_k=top_k)
-        return self._build_outcome(final_chunks, searched=True, rewritten=True)
+        return self._build_outcome(
+            final_chunks, searched=True, rewritten=True, ambiguous=ambiguous
+        )
 
     async def _search_stage1(
         self,
@@ -227,11 +247,24 @@ class KnowledgeRetriever:
         *,
         searched: bool,
         rewritten: bool,
+        ambiguous: bool = False,
     ) -> RetrievalOutcome:
         if not searched:
-            return RetrievalOutcome(chunks=[], searched=False, rewritten=rewritten, confidence="none")
+            return RetrievalOutcome(
+                chunks=[],
+                searched=False,
+                rewritten=rewritten,
+                confidence="none",
+                ambiguous=ambiguous,
+            )
         if not chunks:
-            return RetrievalOutcome(chunks=[], searched=True, rewritten=rewritten, confidence="empty")
+            return RetrievalOutcome(
+                chunks=[],
+                searched=True,
+                rewritten=rewritten,
+                confidence="empty",
+                ambiguous=ambiguous,
+            )
         top_score = chunks[0].score
         confidence: ConfidenceLevel = (
             "low" if top_score < self._settings.retrieval_crag_low_confidence else "high"
@@ -240,6 +273,7 @@ class KnowledgeRetriever:
             chunks=chunks,
             searched=True,
             rewritten=rewritten,
+            ambiguous=ambiguous,
             confidence=confidence,
         )
 
@@ -248,12 +282,14 @@ class KnowledgeRetriever:
         user_message: str,
         *,
         recent_history: Sequence[tuple[str, str]] | None = None,
-    ) -> str:
+    ) -> tuple[str, bool]:
+        """Return the search query and whether the request has several plausible readings."""
         prompt = (
             "You are a search query optimizer for an AI operations knowledge base. "
-            "Given the recent context and user message, output ONLY a concise keyword-rich "
-            "search query to retrieve relevant runbooks, docs, or SOPs. If the message is "
-            "purely casual chit-chat requiring no factual lookup, output exact token: NO_SEARCH."
+            "Given the recent context and user message, answer with exactly two lines:\n"
+            "QUERY: <concise keyword-rich search query, or NO_SEARCH for casual chit-chat>\n"
+            "AMBIGUOUS: <yes if the request has two or more plausible readings that would "
+            "produce materially different answers, otherwise no>"
         )
         messages: list[ChatMessage] = [ChatMessage(role="system", content=prompt)]
         if recent_history:
@@ -275,10 +311,28 @@ class KnowledgeRetriever:
         )
         try:
             res = await self._llm.generate(req)
-            cleaned = res.content.strip().strip('"')
-            return cleaned or user_message
+            return _parse_rewrite_output(res.content, user_message)
         except ModelGatewayError:
-            return user_message
+            return user_message, False
+
+
+def _parse_rewrite_output(raw: str, fallback: str) -> tuple[str, bool]:
+    """Parse the two-line rewrite reply, staying usable if the model ignores the format."""
+    query = ""
+    ambiguous = False
+    for line in raw.splitlines():
+        stripped = line.strip()
+        upper = stripped.upper()
+        if upper.startswith("QUERY:"):
+            query = stripped[len("QUERY:") :].strip().strip('"')
+        elif upper.startswith("AMBIGUOUS:"):
+            ambiguous = stripped[len("AMBIGUOUS:") :].strip().lower().startswith("y")
+
+    if not query:
+        # An older or non-compliant model: treat the first line as the query.
+        first = raw.strip().splitlines()[0].strip().strip('"') if raw.strip() else ""
+        query = first
+    return (query or fallback), ambiguous
 
 
 def _decompose_compound_query(message: str) -> list[str]:
@@ -306,7 +360,7 @@ def _prune_and_merge_chunks(
     relative_ratio: float,
     max_tokens: int,
 ) -> list[RetrievedChunk]:
-    """Filter low-scoring tail chunks, merge adjacent chunks from the same doc, and enforce token cap."""
+    """Drop low-scoring tail chunks, merge neighbours, and enforce the token cap."""
     if not chunks:
         return []
 
@@ -362,13 +416,14 @@ def format_grounded_context(
     confidence: ConfidenceLevel = "high",
     stale_days: int = 180,
 ) -> str:
-    """Wrap retrieved chunks with CRAG confidence notes, freshness warnings, or refusal guardrail."""
+    """Wrap chunks with CRAG confidence, freshness warnings, or the refusal guardrail."""
     if not chunks:
         if not searched:
             return ""
         return (
             "Knowledge base search completed and found NO relevant documents. "
-            "Do NOT fabricate procedures, shell commands, hostnames, or error codes from general knowledge. "
+            "Do NOT fabricate procedures, shell commands, hostnames, or error codes "
+            "from general knowledge. "
             "State clearly that no relevant documentation was found in the knowledge base."
         )
 
@@ -383,15 +438,19 @@ def format_grounded_context(
                 else chunk.updated_at.astimezone(UTC)
             )
             if updated < cutoff:
-                freshness_note = f" (note: document last updated {updated.date().isoformat()} — verify currency)"
+                updated_on = updated.date().isoformat()
+                freshness_note = f" (note: document last updated {updated_on} — verify currency)"
         blocks.append(
-            f"[{idx}] Source: {chunk.document_title} (score={chunk.score:.2f}){freshness_note}\n{chunk.content}"
+            f"[{idx}] Source: {chunk.document_title} "
+            f"(score={chunk.score:.2f}){freshness_note}\n{chunk.content}"
         )
 
     joined = "\n\n---\n\n".join(blocks)
     confidence_note = (
-        "\nNote: Retrieval confidence is LOW. Only rely on directly relevant details in the excerpts; "
-        "if the excerpts are ambiguous or missing environment/service context, ask a clarifying question instead of guessing."
+        "\nNote: Retrieval confidence is LOW. Only rely on directly relevant details "
+        "in the excerpts; "
+        "if the excerpts are ambiguous or missing environment/service context, ask a "
+        "clarifying question instead of guessing."
         if confidence == "low"
         else ""
     )

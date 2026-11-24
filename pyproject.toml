@@ -13,9 +13,12 @@ requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.20",
     "asyncpg>=0.30",
+    "cryptography>=43.0",
+    "ddgs>=9.16.1",
     "fastapi>=0.115",
     "httpx>=0.28",
     "pydantic-settings>=2.7",
+    "pyjwt>=2.15.1",
     "pypdf>=5.0",
     "python-docx>=1.1",
     "python-multipart>=0.0.20",

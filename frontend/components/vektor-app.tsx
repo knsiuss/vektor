@@ -45,7 +45,7 @@ import { Activity, BarChart3, BookOpen, ChevronRight, Cpu, Search, Settings, Sid
 import { KnowledgeView } from "./knowledge-view";
 import { ArtifactPane, type ArtifactItem } from "./artifact-pane";
 import { LoginScreen } from "./login-screen";
-import { isSupabaseConfigured } from "@/lib/supabase";
+import { getSupabaseAccessToken, isSupabaseConfigured } from "@/lib/supabase";
 import { ProfileModal } from "./profile-modal";
 import { DEFAULT_CONNECTION, SettingsView } from "./settings-view";
 import { Sidebar } from "./sidebar";
@@ -618,8 +618,24 @@ export function VektorApp({ initialConversationId }: { initialConversationId?: s
   const handleUpload = useCallback(async (file: File) => {
     const body = new FormData();
     body.append("file", file);
+    // Hosted proxies cap bodies (Vercel: 4.5 MB), so big files go straight to the backend.
+    const directBase = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
+    const useDirect = file.size > 4 * 1024 * 1024 && Boolean(directBase);
     try {
-      await api("knowledge/documents/upload", connection, { method: "POST", body, timeoutMs: 120_000 });
+      if (useDirect) {
+        const token = await getSupabaseAccessToken();
+        const upload = await fetch(`${directBase.replace(/\/$/, "")}/api/v1/knowledge/documents/upload`, {
+          method: "POST",
+          body,
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        });
+        if (!upload.ok) {
+          const detail = await upload.json().catch(() => null) as { detail?: string } | null;
+          throw new Error(detail?.detail ?? `Upload failed (${upload.status}).`);
+        }
+      } else {
+        await api("knowledge/documents/upload", connection, { method: "POST", body, timeoutMs: 120_000 });
+      }
       await refreshDocuments();
       record(`Uploaded ${file.name}`, "knowledge");
     } catch (cause) {

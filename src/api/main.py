@@ -9,6 +9,7 @@ from api.auth import resolve_principal
 from api.middleware import request_context_middleware
 from api.routers import (
     admin,
+    artifact_evidence,
     artifacts,
     chat,
     conversations,
@@ -19,7 +20,9 @@ from api.routers import (
     me,
     memory,
     providers,
+    public_chat,
     usage,
+    widgets,
     workflows,
 )
 from api.routers import (
@@ -42,6 +45,7 @@ from modules.settings import models as _settings_models  # noqa: F401
 from modules.settings import profile_models as _profile_models  # noqa: F401
 from modules.usage import models as _usage_models  # noqa: F401
 from modules.usage.recorder import UsageRecorder
+from modules.widgets import models as _widgets_models  # noqa: F401
 from modules.workflows import models as _workflow_models  # noqa: F401
 
 
@@ -115,6 +119,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.state.settings = resolved_settings
 
+    cors_origins = [o.strip() for o in resolved_settings.cors_origins.split(",") if o.strip()]
+    if cors_origins:
+        from fastapi.middleware.cors import CORSMiddleware
+
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+            allow_headers=["authorization", "content-type", "x-api-key", "x-vektor-backend"],
+        )
+
     @application.middleware("http")
     async def security_and_rate_limit_middleware(
         request: Request,
@@ -131,6 +147,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             and (path.endswith("/start") or path.endswith("/callback"))
         ):
             return await call_next(request)
+
+        if path.startswith("/api/v1/public/"):
+            origin = request.headers.get("origin")
+            cors_headers = {
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+                "Vary": "Origin",
+            }
+            if origin:
+                cors_headers["Access-Control-Allow-Origin"] = origin
+            if request.method == "OPTIONS":
+                return Response(status_code=204, headers=cors_headers)
+
+            client_ip = request.client.host if request.client else "unknown"
+            decision = limiter.check(f"public:{client_ip}")
+            if not decision.allowed:
+                return build_rate_limited_response(decision)
+            response = await call_next(request)
+            for key, value in cors_headers.items():
+                response.headers[key] = value
+            await _flush_usage(request, response)
+            return response
 
         from modules.identity.supabase_auth import extract_bearer_jwt, verify_supabase_jwt
 
@@ -171,11 +209,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(memory.router)
     application.include_router(admin.router)
     application.include_router(artifacts.router)
+    application.include_router(artifact_evidence.router)
     application.include_router(providers.router)
     application.include_router(workflows.router)
     application.include_router(mcp.router)
     application.include_router(gateway.router)
     application.include_router(keys.router)
+    application.include_router(widgets.router)
+    application.include_router(public_chat.router)
 
     @application.get("/health", tags=["system"])
     async def health_check() -> dict[str, str]:

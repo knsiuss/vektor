@@ -73,4 +73,4 @@ async function forward(
   }
 }
 
-export { forward as DELETE, forward as GET, forward as POST };
+export { forward as DELETE, forward as GET, forward as PATCH, forward as POST, forward as PUT };

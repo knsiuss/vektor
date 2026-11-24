@@ -9,6 +9,7 @@ import SyntaxHighlighter from "react-syntax-highlighter";
 import { atomOneDark } from "react-syntax-highlighter/dist/esm/styles/hljs";
 
 import type { Citation, Connection, GroundingReport, ToolCall } from "@/lib/types";
+import { formatDate } from "@/lib/format";
 
 import { Brain, Check, ChevronDown, CircleAlert, Copy, FileText, LoaderCircle, Settings2, ShieldAlert, ThumbsDown, ThumbsUp, VektorLogo } from "./icons";
 import { McpAppFrame } from "./mcp-app-frame";
@@ -145,17 +146,34 @@ function ToolTrace({ tool }: { tool: ToolCall }) {
 }
 
 function CitationRow({ citation, index }: { citation: Citation; index: number }) {
+  const isWeb = citation.kind === "web" && Boolean(citation.url);
+  let host = "";
+  if (isWeb) {
+    try {
+      host = new URL(citation.url as string).hostname.replace(/^www\./, "");
+    } catch {
+      host = citation.url ?? "";
+    }
+  }
   return (
     <details className="citation">
       <summary>
         <span className="citation-index">[{index}]</span>
         <FileText size={15} aria-hidden="true" />
-        <span>{citation.document_title}</span>
-        <span className="match-score">{Math.round(citation.score * 100)}% match</span>
+        {isWeb ? (
+          <a href={citation.url as string} target="_blank" rel="noreferrer">{citation.document_title}</a>
+        ) : (
+          <span>{citation.document_title}</span>
+        )}
+        {isWeb ? (
+          <span className="match-score web-source">{host}{citation.retrieved_at ? ` \u00b7 ${formatDate(citation.retrieved_at)}` : ""}</span>
+        ) : (
+          <span className="match-score">{Math.round(citation.score * 100)}% match</span>
+        )}
       </summary>
       <div className="citation-content">
         <p>{citation.content}</p>
-        <span>Chunk {citation.chunk_index + 1}</span>
+        <span>{isWeb ? "Fetched page" : `Chunk ${citation.chunk_index + 1}`}</span>
       </div>
     </details>
   );
@@ -205,13 +223,13 @@ function CitationList({ citations, grounding }: { citations: Citation[]; groundi
   );
 }
 
-function ReasoningTrace({ reasoning }: { reasoning: string }) {
+function ReasoningTrace({ reasoning, streaming = false }: { reasoning: string; streaming?: boolean }) {
   return (
-    <details className="reasoning-trace">
+    <details className="reasoning-trace" open={streaming}>
       <summary>
         <Brain size={15} aria-hidden="true" />
-        <span>Reasoning</span>
-        <span className="status-word reasoning">thinking</span>
+        <span>{streaming ? "Thinking..." : "Thought process"}</span>
+        <span className="status-word reasoning">{streaming ? "live" : "thinking"}</span>
         <ChevronDown size={15} className="details-chevron" aria-hidden="true" />
       </summary>
       <div className="reasoning-details">{reasoning}</div>
@@ -303,6 +321,7 @@ export function ChatMessage({
     reasoning?: string | null;
     status?: "answer" | "clarify" | "unknown" | null;
     clarify_options?: string[] | null;
+    error?: boolean;
     usage?: { cached_tokens?: number; total_tokens?: number } | null;
     created_at: string;
   };
@@ -322,6 +341,21 @@ export function ChatMessage({
 
   if (message.role === "user") {
     return <article className="user-message"><div className="user-bubble">{message.content}</div></article>;
+  }
+
+  if (message.error) {
+    return (
+      <article className="assistant-message error-message" role="alert">
+        <div className="assistant-avatar"><CircleAlert size={17} aria-hidden="true" /></div>
+        <div className="assistant-content">
+          <div className="message-author">Vektor <span>Request failed</span></div>
+          <div className="error-bubble">
+            <p>{message.content}</p>
+            <span className="error-hint">Your message was sent, but the provider returned no answer. Try again in a moment.</span>
+          </div>
+        </div>
+      </article>
+    );
   }
 
   if (message.status === "clarify" && !streaming) {
@@ -352,6 +386,12 @@ export function ChatMessage({
       </article>
     );
   }
+
+function formatArguments(args: Record<string, unknown> | undefined): string {
+  if (!args || Object.keys(args).length === 0) return "no arguments";
+  const text = JSON.stringify(args, null, 2);
+  return text.length > 400 ? `${text.slice(0, 400)}…` : text;
+}
 
   const blockedTools = streaming ? [] : (message.toolCalls as ToolCall[] | undefined)?.filter((tool) => tool.status === "blocked") ?? [];
   const chooseRating = (next: "up" | "down") => {
@@ -393,6 +433,14 @@ export function ChatMessage({
             <div>
               <strong>{blockedTools.map((tool) => tool.tool_name).join(", ")} requires approval</strong>
               <p>This tool can change your infrastructure. Approving repeats this instruction and allows every mutating tool in the new turn.</p>
+              <ul className="approval-preview">
+                {blockedTools.map((tool) => (
+                  <li key={tool.call_id}>
+                    <code>{tool.tool_name}</code>
+                    <pre>{formatArguments(tool.arguments)}</pre>
+                  </li>
+                ))}
+              </ul>
               <div className="approval-actions">
                 <button className="button danger" onClick={() => onApprove(message.content)} disabled={actionPending}>
                   {actionPending ? <LoaderCircle size={15} className="spin" aria-hidden="true" /> : null}
@@ -404,7 +452,7 @@ export function ChatMessage({
           </div>
         )}
         {!streaming && message.grounding && <GroundingWarnings grounding={message.grounding} />}
-        {message.reasoning ? <ReasoningTrace reasoning={message.reasoning} /> : null}
+        {message.reasoning ? <ReasoningTrace reasoning={message.reasoning} streaming={streaming} /> : null}
         <div className={streaming ? "markdown is-streaming" : "markdown"}><MessageContent content={message.content} /></div>
         {message.citations && (message.citations as Citation[]).length > 0 && (
           <CitationList citations={message.citations as Citation[]} grounding={message.grounding} />

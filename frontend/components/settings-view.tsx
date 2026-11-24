@@ -14,10 +14,13 @@ import {
   getProviderSettings,
   testProviderConnection,
   upsertProviderSettings,
+  api,
 } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { FALLBACK_MODELS } from "@/lib/models";
 import { ModelPicker } from "./model-picker";
+import { ProviderProfilesCard } from "./provider-profiles-card";
+import { VaultPolicyCard } from "./vault-policy-card";
 import {
   Check,
   ChevronDown,
@@ -127,6 +130,7 @@ export function SettingsView({
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [profileRefresh, setProfileRefresh] = useState(0);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ url: string; result: ConnectionCheckResult } | null>(null);
 
@@ -170,7 +174,23 @@ export function SettingsView({
     setError("");
     setSaving(true);
     try {
-      await upsertProviderSettings(connection, buildPayload());
+      const updated = await upsertProviderSettings(connection, buildPayload());
+      setSetting(updated);
+      if (draft.apiKey.trim()) {
+        await api("providers/profiles", connection, {
+          method: "POST",
+          body: {
+            label: PROVIDER_LABELS[draft.provider] ?? draft.provider,
+            provider: draft.provider,
+            model: draft.model || modelForProvider(draft.provider),
+            base_url: draft.baseUrl || null,
+            api_key: draft.apiKey.trim(),
+            is_default: true,
+          },
+        }).catch(() => undefined);
+        setProfileRefresh((n) => n + 1);
+      }
+      setDraft((current) => ({ ...current, apiKey: "" }));
       setSaved(true);
       await onSave(connection);
     } catch (cause) {
@@ -206,6 +226,7 @@ export function SettingsView({
     try {
       await clearProviderApiKey(connection);
       setDraft((current) => ({ ...current, apiKey: "" }));
+      setSetting((current) => (current ? { ...current, api_key_configured: false } : current));
       setSaved(false);
     } catch {
       // Ignore: having no key configured is not an error for the user.
@@ -458,6 +479,9 @@ export function SettingsView({
           </button>
         </div>
       </form>
+
+      <ProviderProfilesCard connection={connection} refreshSignal={profileRefresh} />
+      <VaultPolicyCard connection={connection} />
 
       <div className="v-note v-note-block">
         <Info size={20} aria-hidden="true" />

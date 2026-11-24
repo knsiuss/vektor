@@ -16,6 +16,7 @@ import {
   LoaderCircle,
   MoreVertical,
   Moon,
+  RefreshCw,
   Search,
   Sun,
   Trash2,
@@ -109,6 +110,19 @@ export function KnowledgeView({
       setTarget(null);
     } finally {
       setDeleting(false);
+    }
+  }
+
+  async function reindex(doc: KnowledgeDocument) {
+    setMenuId(null);
+    setNotice("");
+    try {
+      await api(`knowledge/documents/${doc.id}/reindex`, connection, { method: "POST" });
+      setNotice(`${doc.title} was re-indexed with the current embedding model.`);
+      onEvent(`Re-indexed ${doc.title}`);
+      await onRefresh();
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : "Re-indexing failed.");
     }
   }
 
@@ -266,7 +280,7 @@ export function KnowledgeView({
             <div className="v-table-wrap">
               <table className="v-table">
                 <caption className="sr-only">Indexed documents</caption>
-                <thead><tr><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Chunks</th><th scope="col">Status</th><th scope="col">Uploaded At</th><th scope="col" className="v-right">Actions</th></tr></thead>
+                <thead><tr><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Chunks</th><th scope="col">Status</th><th scope="col">Updated</th><th scope="col" className="v-right">Actions</th></tr></thead>
                 <tbody>
                   {visible.map((doc) => {
                     const type = documentType(doc.source, doc.title);
@@ -276,12 +290,18 @@ export function KnowledgeView({
                         <td>{type.label}</td>
                         <td>{doc.chunk_count.toLocaleString()}</td>
                         <td><span className="v-status-ok"><i className="dot live" />Indexed</span></td>
-                        <td>{formatDateTime(doc.created_at)}</td>
+                        <td>
+                          <span className="v-doc-updated">
+                            {formatDateTime(doc.last_synced_at ?? doc.created_at)}
+                            {doc.is_stale && <span className="v-stale-pill">Stale</span>}
+                          </span>
+                        </td>
                         <td className="v-right">
                           <div className="v-menu-wrap">
                             <button className="icon-button" aria-label={`Actions for ${doc.title}`} aria-haspopup="menu" aria-expanded={menuId === doc.id} onClick={(event) => { event.stopPropagation(); setMenuId(menuId === doc.id ? null : doc.id); }}><MoreVertical size={18} aria-hidden="true" /></button>
                             {menuId === doc.id && (
                               <div className="v-menu" role="menu">
+                                <button role="menuitem" onClick={() => void reindex(doc)}><RefreshCw size={15} aria-hidden="true" /> Re-index document</button>
                                 <button role="menuitem" className="danger" onClick={() => setTarget(doc)}><Trash2 size={15} aria-hidden="true" /> Delete document</button>
                               </div>
                             )}

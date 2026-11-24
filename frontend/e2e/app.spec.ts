@@ -6,8 +6,16 @@ test.describe("Vektor AI Operations Platform", () => {
     await expect(page.locator("h1")).toBeVisible({ timeout: 15000 });
   });
 
+  async function openSidebar(page: import("@playwright/test").Page, isMobile: boolean) {
+    if (isMobile) {
+      await page.locator(".mobile-topbar button").click();
+    } else {
+      await page.locator(".sidebar-open-button").click();
+    }
+  }
+
   async function openDrawer(page: import("@playwright/test").Page, label: string, isMobile: boolean) {
-    if (isMobile) await page.locator(".mobile-topbar button").click();
+    await openSidebar(page, isMobile);
     await page.locator(".sidebar-utilities button", { hasText: "Settings" }).click();
     await expect(page.locator(".crm-settings-nav")).toBeVisible({ timeout: 10000 });
     if (label !== "Connection Settings" && label !== "Connection") {
@@ -69,7 +77,7 @@ test.describe("Vektor AI Operations Platform", () => {
 
   test("sidebar navigation opens Settings hub and switches between Connection, Knowledge and Telemetry", async ({ page, isMobile }) => {
     await page.goto("/");
-    if (isMobile) await page.locator(".mobile-topbar button").click();
+    await openSidebar(page, isMobile);
     await page.locator(".sidebar-utilities button", { hasText: "Settings" }).click();
     await expect(page.locator(".sidebar-utilities button.is-active")).toContainText("Settings");
     await expect(page.locator("h1")).toContainText("Connection Settings");
@@ -107,7 +115,7 @@ test.describe("Vektor AI Operations Platform", () => {
 
   test("profile dialog opens from the sidebar and closes", async ({ page, isMobile }) => {
     await page.goto("/");
-    if (isMobile) await page.locator(".mobile-topbar button").click();
+    await openSidebar(page, isMobile);
     await page.locator(".v-user").click();
     await expect(page.locator("dialog.v-profile")).toBeVisible();
     await expect(page.locator("dialog.v-profile h2")).toContainText("Profile");

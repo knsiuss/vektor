@@ -3,7 +3,16 @@
 import { useEffect, useRef, useState } from "react";
 
 import { shortModelName } from "@/lib/models";
-import type { KnowledgeDocument, ReasoningEffort, RetrievalMode } from "@/lib/types";
+import type {
+  Connection,
+  ConversationContext,
+  KnowledgeDocument,
+  ReasoningEffort,
+  RetrievalMode,
+} from "@/lib/types";
+
+import { ChatModelPopover } from "./chat-model-popover";
+import { ContextMeter } from "./context-meter";
 
 import {
   ArrowUp,
@@ -57,6 +66,13 @@ export function Composer({
   onReasoningEffortChange,
   onStop,
   model,
+  modelContextLength,
+  context,
+  compacting,
+  onCompact,
+  connection,
+  activeProfileId,
+  onSelectModel,
   onOpenSettings,
 }: {
   value: string;
@@ -77,6 +93,13 @@ export function Composer({
   onStop?: () => void;
   /** Active model id, shown next to the reasoning effort in the footer. */
   model?: string | null;
+  modelContextLength?: number | null;
+  context?: ConversationContext | null;
+  compacting?: boolean;
+  onCompact?: () => void;
+  connection?: Connection;
+  activeProfileId?: string | null;
+  onSelectModel?: (model: string, profileId: string | null, contextLength?: number | null) => void;
   /** Jump to provider settings from the model menu. */
   onOpenSettings?: () => void;
 }) {
@@ -88,6 +111,7 @@ export function Composer({
   const [uploading, setUploading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [panel, setPanel] = useState<"rag" | "reasoning" | "options" | null>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
 
@@ -122,13 +146,19 @@ export function Composer({
   }, [menuOpen]);
 
   useEffect(() => {
-    if (!modelMenuOpen) return;
+    if (!modelMenuOpen && !pickerOpen) return;
     const close = (event: PointerEvent) => {
       const target = event.target as Node | null;
-      if (target && !modelMenuRef.current?.contains(target)) setModelMenuOpen(false);
+      if (target && !modelMenuRef.current?.contains(target)) {
+        setModelMenuOpen(false);
+        setPickerOpen(false);
+      }
     };
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setModelMenuOpen(false);
+      if (event.key === "Escape") {
+        setModelMenuOpen(false);
+        setPickerOpen(false);
+      }
     };
     document.addEventListener("pointerdown", close);
     document.addEventListener("keydown", escape);
@@ -136,7 +166,7 @@ export function Composer({
       document.removeEventListener("pointerdown", close);
       document.removeEventListener("keydown", escape);
     };
-  }, [modelMenuOpen]);
+  }, [modelMenuOpen, pickerOpen]);
 
   function submit() {
     if (!value.trim() || disabled || uploading) return;
@@ -325,13 +355,45 @@ export function Composer({
                 role="menuitem"
                 onClick={() => {
                   setModelMenuOpen(false);
-                  onOpenSettings?.();
+                  if (connection && onSelectModel) {
+                    setPickerOpen(true);
+                  } else {
+                    onOpenSettings?.();
+                  }
                 }}
               >
                 <span>More models</span>
                 <ChevronRight size={16} aria-hidden="true" />
               </button>
             </div>
+          )}
+          {pickerOpen && connection && onSelectModel && (
+            <ChatModelPopover
+              connection={connection}
+              selectedModel={model ?? null}
+              selectedProfileId={activeProfileId ?? null}
+              onSelect={(nextModel, nextProfileId, ctxLen) => {
+                onSelectModel(nextModel, nextProfileId, ctxLen);
+                setPickerOpen(false);
+              }}
+              onManageApis={
+                onOpenSettings
+                  ? () => {
+                      setPickerOpen(false);
+                      onOpenSettings();
+                    }
+                  : undefined
+              }
+            />
+          )}
+          {context && context.total_messages > 0 && onCompact && (
+            <ContextMeter
+              context={context}
+              compacting={Boolean(compacting)}
+              onCompact={onCompact}
+              model={model}
+              modelContextLength={modelContextLength}
+            />
           )}
         </span>
       </div>

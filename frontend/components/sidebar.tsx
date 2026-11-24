@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import { LogOut } from "lucide-react";
+import { BookOpen, Bot, CheckCircle2, Globe, Inbox, LogOut } from "lucide-react";
 
 import { groupConversations } from "@/lib/conversations";
 import { initials } from "@/lib/format";
@@ -77,20 +78,7 @@ export function Sidebar({
     };
     document.addEventListener("click", close);
     document.addEventListener("keydown", onKey);
-    const [supabaseEmail, setSupabaseEmail] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!isSupabaseConfigured()) return;
-    const supabase = getSupabaseClient();
-    if (!supabase) return;
-    void supabase.auth.getUser().then(({ data }) => {
-      setSupabaseEmail(data.user?.email ?? null);
-    });
-  }, []);
-
-  const displayName = supabaseEmail ?? userName;
-
-  return () => {
+    return () => {
       document.removeEventListener("click", close);
       document.removeEventListener("keydown", onKey);
     };
@@ -176,6 +164,26 @@ export function Sidebar({
         </nav>
         <div className="sidebar-bottom">
           <div className="sidebar-utilities">
+            <Link href="/inbox">
+              <Inbox size={18} aria-hidden="true" />
+              <span className="sidebar-label">Inbox</span>
+            </Link>
+            <Link href="/channels">
+              <Bot size={18} aria-hidden="true" />
+              <span className="sidebar-label">Channels</span>
+            </Link>
+            <Link href="/widgets">
+              <Globe size={18} aria-hidden="true" />
+              <span className="sidebar-label">Web Widgets</span>
+            </Link>
+            <Link href="/evals">
+              <CheckCircle2 size={18} aria-hidden="true" />
+              <span className="sidebar-label">Evals &amp; Audit</span>
+            </Link>
+            <Link href="/guide">
+              <BookOpen size={18} aria-hidden="true" />
+              <span className="sidebar-label">Guide (ID/EN)</span>
+            </Link>
             <button
               className={inSettings ? "is-active" : ""}
               aria-current={inSettings ? "page" : undefined}

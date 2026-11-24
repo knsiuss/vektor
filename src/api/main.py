@@ -9,16 +9,22 @@ from api.auth import resolve_principal
 from api.middleware import request_context_middleware
 from api.routers import (
     admin,
+    approvals,
     artifact_evidence,
     artifacts,
+    channel_analytics,
     channel_webhooks,
     channels,
     chat,
     conversations,
+    evals,
     gateway,
     inbox,
+    inbox_live,
+    inbox_promote,
     keys,
     knowledge,
+    knowledge_audit,
     mcp,
     me,
     memory,
@@ -40,9 +46,11 @@ from api.security import (
 )
 from core.config.settings import Settings, get_settings
 from core.database import create_engine, create_session_factory, init_db
+from modules.approvals import models as _approvals_models  # noqa: F401
 from modules.billing import models as _billing_models  # noqa: F401
 from modules.channels import models as _channels_models  # noqa: F401
 from modules.conversations import models as _conversation_models  # noqa: F401
+from modules.evals import models as _evals_models  # noqa: F401
 from modules.identity import models as _identity_models  # noqa: F401
 from modules.knowledge import models as _knowledge_models  # noqa: F401
 from modules.llm_gateway import models as _gateway_models  # noqa: F401
@@ -209,6 +217,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(prompts.router)
     application.include_router(chat.router)
     application.include_router(conversations.router)
+    application.include_router(knowledge_audit.router)
     application.include_router(knowledge.router)
     application.include_router(usage.router)
     application.include_router(me.router)
@@ -223,9 +232,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(keys.router)
     application.include_router(widgets.router)
     application.include_router(public_chat.router)
+    application.include_router(channel_analytics.router)
     application.include_router(channels.router)
     application.include_router(channel_webhooks.router)
     application.include_router(inbox.router)
+    application.include_router(inbox_live.router)
+    application.include_router(inbox_promote.router)
+    application.include_router(evals.router)
+    application.include_router(approvals.router)
 
     @application.get("/health", tags=["system"])
     async def health_check() -> dict[str, str]:

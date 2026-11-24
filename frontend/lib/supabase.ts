@@ -18,6 +18,7 @@ export function getSupabaseClient(): SupabaseClient | null {
 }
 
 export async function getSupabaseAccessToken(): Promise<string | null> {
+  if (process.env.NEXT_PUBLIC_DEV_BYPASS_AUTH === "true") return null;
   const client = getSupabaseClient();
   if (!client) return null;
   const { data } = await client.auth.getSession();

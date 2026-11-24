@@ -182,22 +182,26 @@ button, select, textarea, input { font-family: inherit; font-size: inherit; }
   padding: 16px 20px 12px 20px;
   border-top: 1px solid var(--color-border);
 }
-.sidebar-utilities button {
+.sidebar-utilities button,
+.sidebar-utilities a {
   width: 100%;
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 9px 12px;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   border: none;
   background: transparent;
   border-radius: var(--radius-md);
   cursor: pointer;
   text-align: left;
+  text-decoration: none;
   font-size: 14px;
   color: var(--color-ink);
+  box-sizing: border-box;
 }
-.sidebar-utilities button:hover { background: var(--color-surface); }
+.sidebar-utilities button:hover,
+.sidebar-utilities a:hover { background: var(--color-surface); }
 
 .backend-status {
   width: 100%;

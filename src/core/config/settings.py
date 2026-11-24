@@ -106,6 +106,19 @@ class Settings(BaseSettings):
     sandbox_workspace_dir: str = "./sandbox_workspace"
     sandbox_ssh_target: str | None = None
 
+    web_tools_enabled: bool = True
+    web_search_provider: Literal["duckduckgo", "searxng"] = "searxng"
+    # Empty means use the built-in public SearXNG list; set your own for stable results.
+    web_searxng_url: str | None = None
+    web_max_searches: int = Field(default=3, ge=1, le=10)
+    web_max_fetches: int = Field(default=3, ge=1, le=10)
+    web_max_results: int = Field(default=5, ge=1, le=10)
+    web_fetch_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
+    web_max_page_chars: int = Field(default=6000, ge=500, le=40000)
+
+    kms_master_key: SecretStr | None = None
+    gateway_allow_local_endpoints: bool = False
+
     @property
     def is_production(self) -> bool:
         """Return True when running in the production environment."""

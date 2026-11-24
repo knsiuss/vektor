@@ -9,6 +9,7 @@ from modules.conversations.repository import PermissionDeniedError
 from modules.identity.principal import Principal
 from modules.usage.models import MessageFeedback, ToolUsageEvent, UsageEvent
 from modules.usage.schemas import (
+    FeedbackItem,
     FeedbackResponse,
     TimeseriesPoint,
     TimeseriesTotals,
@@ -166,6 +167,42 @@ class UsageEventRepository:
                 tokens=sum(count for day, count in tokens.items() if day in previous_days),
             ),
         )
+
+    async def list_feedback(
+        self,
+        *,
+        rating: str | None = None,
+        limit: int = 20,
+    ) -> list[FeedbackItem]:
+        """Recent feedback from the caller, newest first, with the answer it refers to."""
+        stmt = (
+            select(MessageFeedback, Conversation.title, ConversationMessage.content)
+            .outerjoin(Conversation, Conversation.id == MessageFeedback.conversation_id)
+            .outerjoin(ConversationMessage, ConversationMessage.id == MessageFeedback.message_id)
+            .where(
+                MessageFeedback.tenant_id == self._principal.tenant_id,
+                MessageFeedback.user_id == self._principal.user_id,
+            )
+            .order_by(MessageFeedback.created_at.desc())
+            .limit(limit)
+        )
+        if rating is not None:
+            stmt = stmt.where(MessageFeedback.rating == rating)
+
+        rows = (await self._session.execute(stmt)).all()
+        return [
+            FeedbackItem(
+                id=feedback.id,
+                conversation_id=feedback.conversation_id,
+                conversation_title=title,
+                message_id=feedback.message_id,
+                excerpt=(content or "")[:400],
+                rating=feedback.rating,
+                comment=feedback.comment,
+                created_at=feedback.created_at,
+            )
+            for feedback, title, content in rows
+        ]
 
     async def record_tool_call(
         self,

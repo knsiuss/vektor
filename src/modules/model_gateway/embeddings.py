@@ -81,6 +81,7 @@ class OpenAICompatibleEmbeddingProvider:
                 "input": batch,
             }
             raw_data = await self._post_json("/embeddings", payload, raw_key)
+            self._report_usage(raw_data)
             vectors.extend(self._parse_embeddings(raw_data, expected_count=len(batch)))
         return vectors
 

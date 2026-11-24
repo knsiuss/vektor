@@ -91,6 +91,7 @@ async def ingest_text_document(
             content=payload.content,
             source=payload.source,
             visibility=payload.visibility,
+            source_url=payload.source_url,
         )
     except DuplicateDocumentError as exc:
         raise HTTPException(
@@ -295,3 +296,27 @@ async def delete_document_grant(
     except DocumentAccessDeniedError as exc:
         raise _forbidden(document_id) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/documents/{document_id}/reindex", response_model=DocumentSummary)
+async def reindex_document(
+    document_id: str,
+    repo: Annotated[KnowledgeRepository, Depends(_get_knowledge_repo)],
+) -> DocumentSummary:
+    """Re-embed a document's stored chunks and refresh its freshness timestamp."""
+    try:
+        return await repo.reindex_document(document_id)
+    except DocumentNotFoundError as exc:
+        raise _not_found(document_id) from exc
+    except DocumentAccessDeniedError as exc:
+        raise _forbidden(document_id) from exc
+    except ProviderAuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Embedding provider authentication is not configured.",
+        ) from exc
+    except ModelGatewayError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Upstream embedding provider failed.",
+        ) from exc

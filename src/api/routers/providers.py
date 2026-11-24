@@ -15,14 +15,18 @@ from api.dependencies import get_db_session, get_principal, get_settings
 from core.config.settings import Settings
 from modules.identity.principal import Principal
 from modules.providers.catalog import (
-    DIRECTORY_VENDOR_PREFIXES,
     ModelCatalog,
     ProviderCatalogError,
-    fetch_directory_models,
     fetch_provider_models,
     resolve_base_url,
 )
+from modules.providers.directory import DIRECTORY_VENDOR_PREFIXES, fetch_directory_models
 from modules.settings.models import ProviderSetting
+from modules.settings.profile_repo import (
+    ProviderProfileIn,
+    ProviderProfileOut,
+    ProviderProfileRepository,
+)
 from modules.settings.repository import ProviderSettingRepository
 from modules.settings.schemas import (
     ConnectionCheckOut,
@@ -158,15 +162,24 @@ async def test_provider_connection(
     """
     started = datetime.now(UTC)
 
-    base_url = str(payload.base_url).rstrip("/") if payload.base_url else None
+    base_url = resolve_base_url(payload.provider, payload.base_url, "")
     if not base_url:
-        defaults = {
-            "openai": "https://api.openai.com/v1",
-            "anthropic": "https://api.anthropic.com",
-            "google": "https://generativelanguage.googleapis.com/v1",
-            "custom": "",
-        }
-        base_url = defaults.get(payload.provider, "")
+        return ConnectionCheckOut(
+            status="disconnected",
+            latency_ms=0,
+            model=payload.model,
+            error="Base URL is required for custom providers.",
+        )
+
+    headers: dict[str, str] = {}
+    if payload.api_key:
+        if payload.provider == "google":
+            headers["x-goog-api-key"] = payload.api_key
+        elif payload.provider == "anthropic":
+            headers["x-api-key"] = payload.api_key
+            headers["anthropic-version"] = "2023-06-01"
+        else:
+            headers["Authorization"] = f"Bearer {payload.api_key}"
 
     http_client = getattr(request.app.state, "http_client", None)
     if http_client is None:
@@ -178,7 +191,7 @@ async def test_provider_connection(
     try:
         response = await http_client.get(
             f"{base_url.rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {payload.api_key}"} if payload.api_key else {},
+            headers=headers,
             timeout=10.0,
         )
         latency_ms = round((datetime.now(UTC) - started).total_seconds() * 1000)
@@ -224,3 +237,89 @@ async def clear_provider_api_key(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No provider API key configured.",
         )
+
+
+@router.get("/profiles", response_model=list[ProviderProfileOut])
+async def list_provider_profiles(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    principal: Annotated[Principal, Depends(get_principal)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> list[ProviderProfileOut]:
+    """List all saved AI provider API profiles for the current user."""
+    secret = settings.llm_api_key.get_secret_value() if settings.llm_api_key else "vektor-local"
+    repo = ProviderProfileRepository(session, app_secret=secret)
+    return await repo.list_profiles(tenant_id=principal.tenant_id, user_id=principal.user_id)
+
+
+@router.post("/profiles", response_model=ProviderProfileOut, status_code=status.HTTP_201_CREATED)
+async def create_provider_profile(
+    payload: ProviderProfileIn,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    principal: Annotated[Principal, Depends(get_principal)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ProviderProfileOut:
+    """Save an additional AI provider API profile for multi-API model switching."""
+    secret = settings.llm_api_key.get_secret_value() if settings.llm_api_key else "vektor-local"
+    repo = ProviderProfileRepository(session, app_secret=secret)
+    created = await repo.create_profile(
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        payload=payload,
+    )
+    await session.commit()
+    return created
+
+
+@router.delete("/profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_provider_profile(
+    profile_id: str,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    principal: Annotated[Principal, Depends(get_principal)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> None:
+    """Delete a saved AI provider API profile."""
+    secret = settings.llm_api_key.get_secret_value() if settings.llm_api_key else "vektor-local"
+    repo = ProviderProfileRepository(session, app_secret=secret)
+    deleted = await repo.delete_profile(
+        profile_id=profile_id,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found.")
+    await session.commit()
+
+
+@router.post("/profiles/{profile_id}/models", response_model=ModelCatalog)
+async def list_profile_models(
+    profile_id: str,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    principal: Annotated[Principal, Depends(get_principal)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ModelCatalog:
+    """Fetch live models for a saved API profile without exposing its key to the browser."""
+    secret = settings.llm_api_key.get_secret_value() if settings.llm_api_key else "vektor-local"
+    repo = ProviderProfileRepository(session, app_secret=secret)
+    record = await repo.get_profile(
+        profile_id=profile_id,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+    )
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found.")
+    base_url = resolve_base_url(record.provider, record.base_url, settings.llm_base_url)
+    api_key = repo.decrypt_key(record) or (
+        settings.llm_api_key.get_secret_value() if settings.llm_api_key else None
+    )
+    http_client = getattr(request.app.state, "http_client", None)
+    try:
+        models = await fetch_provider_models(
+            provider=record.provider,
+            base_url=base_url,
+            api_key=api_key,
+            client=http_client,
+        )
+    except ProviderCatalogError as exc:
+        return ModelCatalog(provider=record.provider, models=[], error=str(exc), endpoint=base_url)
+    return ModelCatalog(provider=record.provider, models=models, endpoint=base_url)

@@ -181,3 +181,28 @@ def test_parse_usage_extracts_prompt_cache_tokens() -> None:
     )
     assert anthropic_style.cached_tokens == 40
     assert anthropic_style.cache_creation_tokens == 10
+
+
+async def test_chitchat_hola_skips_knowledge_search() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    try:
+        async with factory() as session:
+            llm = _CountingLLM()
+            know = KnowledgeRepository(
+                session=session,
+                embedding_provider=LocalHashEmbeddingProvider(),
+            )
+            retriever = KnowledgeRetriever(knowledge_repo=know, llm_provider=llm)
+            assert retriever.should_search("hola", mode="auto") is False
+            assert retriever.should_search("check database failover", mode="auto") is True
+
+            outcome = await retriever.retrieve_with_meta(user_message="hola", mode="auto")
+            assert outcome.searched is False
+            assert outcome.chunks == []
+            assert llm.calls == 0
+    finally:
+        await engine.dispose()

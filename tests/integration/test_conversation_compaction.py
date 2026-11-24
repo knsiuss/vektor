@@ -159,3 +159,16 @@ async def test_compact_unknown_conversation_returns_404() -> None:
         response = await client.post("/api/v1/conversations/missing-id/compact")
 
     assert response.status_code == 404
+
+
+async def test_compaction_strips_an_envelope_marker_from_the_summary() -> None:
+    """The summarizer is a chat model; its status marker must not leak into stored history."""
+    provider = _StubProvider(summary="<<status=answer>> - user asked about logs")
+    async with _test_client(provider) as client:
+        conversation_id = await _seed_turns(client, turns=4)
+        after = (await client.post(f"/api/v1/conversations/{conversation_id}/compact")).json()
+
+    summary = after["messages"][0]
+    assert summary["role"] == "summary"
+    assert "status=" not in summary["content"]
+    assert "user asked about logs" in summary["content"]

@@ -16,6 +16,7 @@ class ChatTurnInput(BaseModel):
     message: str = Field(min_length=1, max_length=16000)
     conversation_id: str | None = Field(default=None, min_length=1, max_length=64)
     model: str | None = Field(default=None, min_length=1, max_length=128)
+    provider_profile_id: str | None = Field(default=None, min_length=1, max_length=64)
     retrieval_mode: Literal["auto", "always", "explicit", "off"] = "auto"
     document_ids: list[str] | None = None
     top_k: int = Field(default=4, ge=1, le=10)

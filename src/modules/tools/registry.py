@@ -56,17 +56,6 @@ class ToolRegistry:
                 output=f"Tool '{tool_name}' is not in the allowlist.",
             )
 
-        if entry.definition.risk_level == "mutating" and not allow_mutating:
-            return ToolExecutionRecord(
-                call_id=call_id,
-                tool_name=tool_name,
-                arguments={},
-                status="blocked",
-                output=(
-                    f"Tool '{tool_name}' requires explicit approval (allow_mutating_tools=True)."
-                ),
-            )
-
         parsed_args = _parse_arguments(raw_arguments)
         if parsed_args is None:
             return ToolExecutionRecord(
@@ -75,6 +64,20 @@ class ToolRegistry:
                 arguments={},
                 status="error",
                 output="Malformed JSON arguments passed to tool.",
+            )
+
+        if entry.definition.risk_level == "mutating" and not allow_mutating:
+            # Keep the arguments so the UI can show what would run before approving.
+            preview = json.dumps(parsed_args, ensure_ascii=False)[:400] or "{}"
+            return ToolExecutionRecord(
+                call_id=call_id,
+                tool_name=tool_name,
+                arguments=parsed_args,
+                status="blocked",
+                output=(
+                    f"Tool '{tool_name}' requires explicit approval "
+                    f"(allow_mutating_tools=True). Preview: {preview}"
+                ),
             )
 
         try:

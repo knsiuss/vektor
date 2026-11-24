@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Index, Integer, String, Text
+from sqlalchemy import DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.database import Base
@@ -79,4 +79,17 @@ class MessageFeedback(Base):
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utc_now
+    )
+
+
+class TenantBudget(Base):
+    """Tenant-wide monthly token ceiling. One row per tenant, absent means unlimited."""
+
+    __tablename__ = "tenant_budgets"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    monthly_token_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    warn_ratio: Mapped[float] = mapped_column(Float, nullable=False, default=0.8)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now
     )

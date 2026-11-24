@@ -10,8 +10,9 @@ from modules.conversations.schemas import AdminConversationSummary, UsageSummary
 from modules.identity.principal import Principal
 from modules.identity.repository import AuditRepository
 from modules.identity.schemas import AuditLogItem
+from modules.usage.budget import BudgetRepository
 from modules.usage.repository import UsageEventRepository
-from modules.usage.schemas import UsageBreakdown
+from modules.usage.schemas import BudgetStatus, BudgetUpdateIn, UsageBreakdown
 
 router = APIRouter(
     prefix="/api/v1/admin",
@@ -71,3 +72,16 @@ async def get_audit_log(
         principal.tenant_id, limit=limit, offset=offset
     )
     return [AuditLogItem.model_validate(row) for row in rows]
+
+
+@router.put("/budget", response_model=BudgetStatus)
+async def set_tenant_budget(
+    payload: BudgetUpdateIn,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    principal: Annotated[Principal, Depends(get_principal)],
+) -> BudgetStatus:
+    """Set the tenant's monthly token ceiling used to reject exhausted requests."""
+    return await BudgetRepository(session=session, principal=principal).set_limit(
+        monthly_token_limit=payload.monthly_token_limit,
+        warn_ratio=payload.warn_ratio,
+    )

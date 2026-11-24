@@ -3,9 +3,11 @@ import json
 import math
 import re
 from collections.abc import Sequence
+from datetime import UTC, datetime
 
 from sqlalchemy import and_, bindparam, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from core.config.settings import get_settings
 from modules.identity.principal import DEV_PRINCIPAL, Principal
@@ -50,7 +52,7 @@ class KnowledgeRepository:
         self._embeddings = embedding_provider
         self._principal = principal or DEV_PRINCIPAL
 
-    def _visible_filter(self):
+    def _visible_filter(self) -> ColumnElement[bool]:
         """Documents the caller may read: own, tenant-wide, or explicitly granted."""
         principal = self._principal
         granted = (
@@ -83,6 +85,7 @@ class KnowledgeRepository:
         content: str,
         source: str = "manual",
         visibility: str = "private",
+        source_url: str | None = None,
     ) -> DocumentSummary:
         """Chunk, embed, and persist a document with per-tenant SHA-256 deduplication."""
         clean_title = title.strip()[:255] or "Untitled Document"
@@ -112,6 +115,8 @@ class KnowledgeRepository:
             tenant_id=principal.tenant_id,
             owner_id=principal.user_id,
             visibility=visibility,
+            source_url=source_url,
+            last_synced_at=datetime.now(UTC),
             chunks=[],
         )
         self._session.add(document)
@@ -139,6 +144,9 @@ class KnowledgeRepository:
             created_at=document.created_at,
             owner_id=document.owner_id,
             visibility=document.visibility,
+            source_url=document.source_url,
+            last_synced_at=document.last_synced_at,
+            is_stale=False,
         )
 
     async def list_documents(
@@ -171,6 +179,9 @@ class KnowledgeRepository:
                 created_at=doc.created_at,
                 owner_id=doc.owner_id,
                 visibility=doc.visibility,
+                source_url=doc.source_url,
+                last_synced_at=doc.last_synced_at,
+                is_stale=self._is_stale(doc),
             )
             for doc, count in rows
         ]
@@ -185,6 +196,39 @@ class KnowledgeRepository:
         if document is None:
             raise DocumentNotFoundError(document_id)
         return document
+
+    def _is_stale(self, document: KnowledgeDocument) -> bool:
+        """True when the document has not been re-indexed within the freshness window."""
+        synced = document.last_synced_at or document.created_at
+        if synced.tzinfo is None:
+            synced = synced.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - synced).days > get_settings().retrieval_stale_days
+
+    async def reindex_document(self, document_id: str) -> DocumentSummary:
+        """Re-embed the stored chunks, for example after switching embedding models."""
+        document = await self.get_document(document_id)
+        if not self._can_manage(document):
+            raise DocumentAccessDeniedError(document_id)
+
+        stmt = (
+            select(KnowledgeChunk)
+            .where(KnowledgeChunk.document_id == document.id)
+            .order_by(KnowledgeChunk.chunk_index)
+        )
+        chunks = list((await self._session.execute(stmt)).scalars().all())
+        if not chunks:
+            raise DocumentNotFoundError(document_id)
+
+        vectors = await self._embeddings.embed_texts([chunk.content for chunk in chunks])
+        for chunk, vector in zip(chunks, vectors, strict=True):
+            chunk.embedding_json = json.dumps(vector)
+        document.embedding_model = self._embeddings.embedding_model
+        document.last_synced_at = datetime.now(UTC)
+        await self._session.flush()
+
+        if self._is_postgres():
+            await self._sync_pgvectors(document.id, vectors)
+        return await self._summary_for(document)
 
     async def delete_document(self, document_id: str) -> KnowledgeDocument:
         """Delete a document the caller manages and return it so callers can audit."""
@@ -358,6 +402,9 @@ class KnowledgeRepository:
             created_at=document.created_at,
             owner_id=document.owner_id,
             visibility=document.visibility,
+            source_url=document.source_url,
+            last_synced_at=document.last_synced_at,
+            is_stale=self._is_stale(document),
         )
 
     def _is_postgres(self) -> bool:

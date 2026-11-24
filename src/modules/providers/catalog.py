@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 from pydantic import BaseModel
 
@@ -15,20 +17,7 @@ DEFAULT_BASE_URLS: dict[str, str] = {
     "google": "https://generativelanguage.googleapis.com/v1beta",
 }
 
-# Provider -> OpenRouter vendor prefix. Used only to publish a live model directory when
-# the caller has no key for that provider: the ids are current, the pricing is OpenRouter's.
-DIRECTORY_VENDOR_PREFIXES: dict[str, str] = {
-    "openai": "openai/",
-    "anthropic": "anthropic/",
-    "google": "google/",
-    "mistral": "mistralai/",
-    "deepseek": "deepseek/",
-    "qwen": "qwen/",
-}
-DIRECTORY_MODELS_URL = "https://openrouter.ai/api/v1/models"
-DIRECTORY_LIMIT = 25
 # Routing variants that duplicate a model rather than add a new one.
-DIRECTORY_SKIP_SUFFIXES = (":batch", ":online", ":thinking", ":floor")
 
 REQUEST_TIMEOUT_SECONDS = 15.0
 
@@ -97,7 +86,8 @@ async def _fetch_openai_compatible(
 ) -> list[ModelOption]:
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     data = await _get_json(client, f"{base_url}/models", headers=headers)
-    entries = data.get("data") if isinstance(data, dict) else None
+    entries = data.get("data")
+    entries = entries if isinstance(entries, list) else None
     if not isinstance(entries, list):
         raise ProviderCatalogError("Provider returned an unexpected model list.")
 
@@ -105,8 +95,9 @@ async def _fetch_openai_compatible(
     return _sorted_options([option for option in options if option.id])
 
 
-def _openai_option(entry: dict) -> ModelOption:
-    pricing = entry.get("pricing") if isinstance(entry.get("pricing"), dict) else {}
+def _openai_option(entry: dict[str, Any]) -> ModelOption:
+    raw_pricing = entry.get("pricing")
+    pricing: dict[str, Any] = raw_pricing if isinstance(raw_pricing, dict) else {}
     prompt_price = _per_million(pricing.get("prompt"))
     completion_price = _per_million(pricing.get("completion"))
     model_id = str(entry.get("id", ""))
@@ -187,7 +178,7 @@ async def _get_json(
     *,
     headers: dict[str, str] | None = None,
     params: dict[str, str] | None = None,
-) -> dict:
+) -> dict[str, object]:
     try:
         response = await client.get(url, headers=headers, params=params)
     except httpx.HTTPError as exc:
@@ -221,42 +212,6 @@ def _sorted_options(options: list[ModelOption]) -> list[ModelOption]:
     """Free models first, then unknown pricing, then paid; alphabetical inside each band."""
     rank = {True: 0, None: 1, False: 2}
     return sorted(options, key=lambda option: (rank[option.is_free], option.id.lower()))
-
-
-async def fetch_directory_models(
-    *,
-    provider: str,
-    client: httpx.AsyncClient | None = None,
-    limit: int = DIRECTORY_LIMIT,
-) -> list[ModelOption]:
-    """List a vendor's newest models from OpenRouter's public directory, newest first."""
-    prefix = DIRECTORY_VENDOR_PREFIXES.get(provider)
-    if prefix is None:
-        raise ProviderCatalogError(f"No public directory mapping for '{provider}'.")
-
-    owns_client = client is None
-    http = client or httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS)
-    try:
-        data = await _get_json(http, DIRECTORY_MODELS_URL)
-    finally:
-        if owns_client:
-            await http.aclose()
-
-    entries = data.get("data") if isinstance(data, dict) else None
-    if not isinstance(entries, list):
-        raise ProviderCatalogError("Model directory returned an unexpected payload.")
-
-    ranked: list[tuple[ModelOption, int]] = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        model_id = str(entry.get("id", ""))
-        if not model_id.startswith(prefix) or model_id.endswith(DIRECTORY_SKIP_SUFFIXES):
-            continue
-        ranked.append((_openai_option(entry), _as_int(entry.get("created", 0))))
-
-    ranked.sort(key=lambda pair: pair[1], reverse=True)
-    return [option for option, _ in ranked][:limit]
 
 
 def _as_int(raw: object) -> int:

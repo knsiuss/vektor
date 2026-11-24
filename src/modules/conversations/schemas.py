@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ConversationSummary(BaseModel):
@@ -89,3 +89,5 @@ class UsageSummary(BaseModel):
     completion_tokens: int
     total_tokens: int
     by_model: list[ModelUsageBreakdown]
+    # Assistant reply outcomes ("answer" | "clarify" | "unknown") for this scope.
+    by_status: dict[str, int] = Field(default_factory=dict)

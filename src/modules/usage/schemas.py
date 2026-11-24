@@ -73,9 +73,38 @@ class UsageTimeseries(BaseModel):
     previous: TimeseriesTotals
 
 
+class FeedbackItem(BaseModel):
+    """A stored thumbs up/down with the answer it refers to, for the quality panel."""
+
+    id: str
+    conversation_id: str
+    conversation_title: str | None = None
+    message_id: str
+    excerpt: str
+    rating: str
+    comment: str | None = None
+    created_at: datetime
+
+
+class BudgetUpdateIn(BaseModel):
+    """Admin payload that sets the tenant's monthly token ceiling."""
+
+    monthly_token_limit: int = Field(ge=0)
+    warn_ratio: float = Field(default=0.8, gt=0.0, le=1.0)
+
+
+class BudgetStatus(BaseModel):
+    """Current month's token spend against the tenant's ceiling."""
+
+    month: str
+    limit_tokens: int | None
+    used_tokens: int
+    ratio: float
+    state: Literal["unlimited", "ok", "warning", "exhausted"]
+
+
 class FeedbackInput(BaseModel):
     """User thumbs up/down feedback on an assistant reply."""
-
     conversation_id: str = Field(min_length=1, max_length=64)
     message_id: str = Field(min_length=1, max_length=64)
     rating: Literal["up", "down"]

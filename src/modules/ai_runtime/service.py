@@ -1,10 +1,17 @@
 import asyncio
+import json
 import re
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
-from modules.ai_runtime.envelope import STATUS_MARKER, AssistantEnvelope, parse_assistant_output
+from modules.ai_runtime.envelope import (
+    STATUS_MARKER,
+    AssistantEnvelope,
+    parse_assistant_output,
+    strip_status_markers,
+)
 from modules.ai_runtime.grounding import verify_grounding
 from modules.ai_runtime.prompt_loader import load_prompt
 from modules.ai_runtime.retriever import (
@@ -28,14 +35,33 @@ from modules.model_gateway.tool_calls import ToolCallAccumulator
 from modules.tools.cache import ToolResultCache
 from modules.tools.registry import ToolRegistry
 from modules.tools.schemas import ToolExecutionRecord
+from modules.tools.web import urls_in_text
 from modules.usage.repository import UsageEventRepository
+from modules.usage.tracing import Tracer
 
 _MAX_TOOL_OUTPUT_CHARS = 3000
 _GROUNDED_REFUSAL = "Saya tidak menemukan informasi ini di data yang tersedia."
 
+
+@dataclass
+class _WebTurnState:
+    """Per-turn web bookkeeping: counted calls and URLs the model is allowed to fetch."""
+
+    searches: int = 0
+    fetches: int = 0
+    allowed_urls: set[str] = field(default_factory=set)
+
+
 # Appended to an answer the reader stopped, so the saved history (and the model, on the next
 # turn) can tell the answer is incomplete.
 STOPPED_SUFFIX = "\n\n_(Stopped)_"
+
+_AMBIGUITY_NUDGE = (
+    "Retrieval judges this request as possibly ambiguous. If two plausible readings would "
+    "produce materially different answers, reply with <<status=clarify>> and exactly one "
+    "question plus at most four options. Otherwise state your assumption in one sentence and "
+    "answer normally."
+)
 
 
 class _StatusProbe:
@@ -55,7 +81,8 @@ class _StatusProbe:
         if self.resolved:
             return text, None
         self._buffer += text
-        match = STATUS_MARKER.match(self._buffer)
+        offset = len(self._buffer) - len(self._buffer.lstrip())
+        match = STATUS_MARKER.match(self._buffer, offset)
         if match:
             self.resolved = True
             self.status = match.group(1).lower()
@@ -106,23 +133,67 @@ class ChatService:
         max_tool_iterations: int = 3,
         temperature: float = 0.1,
         stale_days: int = 180,
+        skill_catalog: str = "",
+        tracer: Tracer | None = None,
+        provider_resolver: Callable[[str | None], Awaitable[LLMProvider | None]] | None = None,
+        web_max_searches: int = 3,
+        web_max_fetches: int = 3,
     ) -> None:
         self._provider = provider
         self._repository = repository
         self._retriever = retriever
         self._tools = tool_registry
         self._usage_repo = usage_repo
-        self._system_prompt = system_prompt or load_prompt("system_default.md")
+        base_prompt = system_prompt or load_prompt("system_default.md")
+        self._system_prompt = (
+            f"{base_prompt.rstrip()}\n\n{skill_catalog}" if skill_catalog else base_prompt
+        )
         self._max_history_messages = max_history_messages
         self._max_history_tokens = max_history_tokens
         self._max_tool_iterations = max_tool_iterations
         self._temperature = temperature
         self._stale_days = stale_days
+        self._tracer = tracer
+        self._provider_resolver = provider_resolver
+        self._web_max_searches = web_max_searches
+        self._web_max_fetches = web_max_fetches
         self._tool_cache = ToolResultCache(ttl_seconds=60.0)
+
+    async def _resolve_turn_provider(self, turn_input: ChatTurnInput) -> LLMProvider:
+        if self._provider_resolver is not None:
+            resolved = await self._provider_resolver(turn_input.provider_profile_id)
+            if resolved is not None:
+                return resolved
+        return self._provider
 
     async def execute_turn(self, turn_input: ChatTurnInput) -> ChatTurnResult:
         """Retrieve knowledge, run bounded tool loop, verify grounding, and persist turn."""
         conversation = await self._resolve_conversation(turn_input)
+        active_provider = await self._resolve_turn_provider(turn_input)
+        if self._tracer is not None:
+            with self._tracer.trace(
+                "chat_turn",
+                session_id=conversation.id,
+                metadata={"model": turn_input.model, "mode": turn_input.retrieval_mode},
+            ):
+                return await self._execute_turn_inner(
+                    turn_input,
+                    conversation=conversation,
+                    provider=active_provider,
+                )
+        return await self._execute_turn_inner(
+            turn_input,
+            conversation=conversation,
+            provider=active_provider,
+        )
+
+    async def _execute_turn_inner(
+        self,
+        turn_input: ChatTurnInput,
+        *,
+        conversation: Conversation,
+        provider: LLMProvider,
+    ) -> ChatTurnResult:
         outcome = await self._retrieve_context(turn_input, conversation=conversation)
         citations = outcome.chunks
         if self._should_refuse_before_generate(turn_input, outcome):
@@ -155,13 +226,19 @@ class ChatService:
             citations=citations,
             searched=outcome.searched,
             confidence=outcome.confidence,
+            ambiguous=outcome.ambiguous,
         )
 
         response, tool_records, total_usage = await self._run_with_tools(
             working_messages,
             turn_input=turn_input,
             pre_retrieved=bool(citations),
+            provider=provider,
         )
+
+        web_citations = self._web_citations(tool_records)
+        if web_citations:
+            citations = [*citations, *web_citations]
 
         grounding = verify_grounding(
             response.content,
@@ -186,6 +263,7 @@ class ChatService:
             status=envelope.status,
             clarify_options=envelope.options or None,
         )
+        self._record_status(conversation, envelope.status)
 
         return ChatTurnResult(
             conversation_id=conversation.id,
@@ -210,22 +288,29 @@ class ChatService:
             yield ChatStreamEvent(event="error", detail=str(exc))
             return
 
+        active_provider = await self._resolve_turn_provider(turn_input)
         yield ChatStreamEvent(
             event="meta",
             conversation_id=conversation.id,
-            provider=self._provider.provider_name,
+            provider=active_provider.provider_name,
             model=turn_input.model,
         )
 
-        if self._retriever is not None and turn_input.retrieval_mode != "off":
+        if self._retriever is not None and self._retriever.should_search(
+            turn_input.message,
+            mode=turn_input.retrieval_mode,
+        ):
             yield ChatStreamEvent(event="status", status="Searching knowledge base...")
 
         try:
             outcome = await self._retrieve_context(turn_input, conversation=conversation)
             citations = outcome.chunks
         except ModelGatewayError:
-            yield ChatStreamEvent(event="error", detail="Knowledge retrieval failed upstream.")
-            return
+            if turn_input.retrieval_mode == "always":
+                yield ChatStreamEvent(event="error", detail="Knowledge retrieval failed upstream.")
+                return
+            outcome = RetrievalOutcome(chunks=[])
+            citations = []
 
         if self._should_refuse_before_generate(turn_input, outcome):
             await self._repository.append_message(
@@ -258,6 +343,7 @@ class ChatService:
             citations=citations,
             searched=outcome.searched,
             confidence=outcome.confidence,
+            ambiguous=outcome.ambiguous,
         )
 
         if citations:
@@ -280,6 +366,7 @@ class ChatService:
             prompt_tokens = completion_tokens = total_tokens = 0
             cached_tokens = cache_creation_tokens = 0
             seen_calls: set[tuple[str, str]] = set()
+            web_state = _WebTurnState(allowed_urls=urls_in_text(turn_input.message))
             # Up to N rounds may call tools; one extra round always answers without tools,
             # so the loop cannot end on a tool call that nobody read.
             tool_rounds = self._max_tool_iterations if tools is not None else 0
@@ -300,7 +387,7 @@ class ChatService:
                     tools=(tool_schemas or None) if offer_tools else None,
                     reasoning_effort=turn_input.reasoning_effort,
                 )
-                async for chunk in self._provider.stream(request):
+                async for chunk in active_provider.stream(request):
                     if chunk.model:
                         resolved_model = chunk.model
                     if chunk.usage is not None:
@@ -349,6 +436,7 @@ class ChatService:
                     calls=calls,
                     allow_mutating=turn_input.allow_mutating_tools,
                     seen_calls=seen_calls,
+                    web_state=web_state,
                 )
                 for record in batch:
                     tool_records_all.append(record)
@@ -375,6 +463,10 @@ class ChatService:
 
         full_reply = "".join(accumulated_parts)
         envelope = self._apply_guardrail(parse_assistant_output(full_reply), conversation)
+        web_citations = self._web_citations(tool_records_all)
+        if web_citations:
+            citations = [*citations, *web_citations]
+            yield ChatStreamEvent(event="citations", citations=citations)
         grounding = verify_grounding(
             envelope.display_text,
             citations,
@@ -442,7 +534,8 @@ class ChatService:
         if conversation is None:
             return False
 
-        text = partial_reply.rstrip()
+        # A stop can land before the probe strips a marker; never persist one.
+        text = strip_status_markers(partial_reply).strip()
         if text.count("```") % 2 == 1:
             text += "\n```"  # close a code block the stop cut open, so the suffix renders
 
@@ -466,7 +559,9 @@ class ChatService:
         *,
         turn_input: ChatTurnInput,
         pre_retrieved: bool = False,
+        provider: LLMProvider | None = None,
     ) -> tuple[ModelResponse, list[ToolExecutionRecord], TokenUsage]:
+        active_provider = provider or self._provider
         tool_schemas = self._resolve_tool_schemas(turn_input, pre_retrieved=pre_retrieved)
         records: list[ToolExecutionRecord] = []
         prompt_tokens = 0
@@ -475,6 +570,7 @@ class ChatService:
         cached_tokens = 0
         cache_creation_tokens = 0
         seen_calls: set[tuple[str, str]] = set()
+        web_state = _WebTurnState(allowed_urls=urls_in_text(turn_input.message))
 
         for _ in range(self._max_tool_iterations):
             request = ModelRequest(
@@ -484,7 +580,7 @@ class ChatService:
                 tools=tool_schemas or None,
                 reasoning_effort=turn_input.reasoning_effort,
             )
-            response = await self._provider.generate(request)
+            response = await active_provider.generate(request)
             prompt_tokens += response.usage.prompt_tokens
             completion_tokens += response.usage.completion_tokens
             total_tokens += response.usage.total_tokens
@@ -516,6 +612,7 @@ class ChatService:
                 calls=response.tool_calls,
                 allow_mutating=turn_input.allow_mutating_tools,
                 seen_calls=seen_calls,
+                web_state=web_state,
             )
             for exec_record in batch:
                 records.append(exec_record)
@@ -528,7 +625,7 @@ class ChatService:
                 )
 
         # Final synthesis pass with tools disabled after reaching iteration cap
-        final_response = await self._provider.generate(
+        final_response = await active_provider.generate(
             ModelRequest(
                 messages=messages,
                 model=turn_input.model,
@@ -571,10 +668,14 @@ class ChatService:
         calls: Sequence[Any],
         allow_mutating: bool,
         seen_calls: set[tuple[str, str]],
+        web_state: _WebTurnState,
     ) -> list[ToolExecutionRecord]:
         read_names = {d.name for d in tools.list_definitions(include_mutating=False)}
 
         async def _run_one(call: Any) -> ToolExecutionRecord:
+            guard = self._web_guard(call, web_state)
+            if guard is not None:
+                return guard
             norm_args = ToolResultCache.normalize_args(call.arguments)
             key = (call.name, norm_args)
             if key in seen_calls:
@@ -590,6 +691,7 @@ class ChatService:
             if call.name in read_names:
                 cached = self._tool_cache.get(call.name, call.arguments)
                 if cached is not None:
+                    self._remember_web_urls(call.name, cached, web_state)
                     return ToolExecutionRecord(
                         call_id=call.id,
                         tool_name=call.name,
@@ -607,9 +709,112 @@ class ChatService:
             )
             if record.status == "success" and call.name in read_names:
                 self._tool_cache.set(call.name, call.arguments, record.output)
+                self._remember_web_urls(call.name, record.output, web_state)
             return record
 
         return list(await asyncio.gather(*(_run_one(call) for call in calls)))
+
+    def _web_guard(self, call: Any, state: _WebTurnState) -> ToolExecutionRecord | None:
+        """Enforce per-turn web budgets and the fetch-URL allowlist before any network call."""
+        if call.name == "web_search":
+            if state.searches >= self._web_max_searches:
+                return self._blocked_web_call(
+                    call,
+                    f"Web search limit reached ({self._web_max_searches} per turn). "
+                    "Answer with what you have.",
+                )
+            state.searches += 1
+            return None
+        if call.name != "web_fetch":
+            return None
+        if state.fetches >= self._web_max_fetches:
+            return self._blocked_web_call(
+                call,
+                f"Web fetch limit reached ({self._web_max_fetches} per turn). "
+                "Answer with the pages already read.",
+            )
+        url = self._tool_argument(call.arguments, "url")
+        if url not in state.allowed_urls:
+            return self._blocked_web_call(
+                call,
+                "web_fetch only accepts a URL returned by web_search in this turn or "
+                "a URL the user provided. Search first instead of guessing a URL.",
+            )
+        state.fetches += 1
+        return None
+
+    @staticmethod
+    def _blocked_web_call(call: Any, reason: str) -> ToolExecutionRecord:
+        return ToolExecutionRecord(
+            call_id=call.id,
+            tool_name=call.name,
+            arguments={},
+            status="blocked",
+            output=reason,
+        )
+
+    @staticmethod
+    def _tool_argument(raw_arguments: str | dict[str, Any], key: str) -> str:
+        parsed: Any = raw_arguments
+        if isinstance(raw_arguments, str):
+            try:
+                parsed = json.loads(raw_arguments or "{}")
+            except ValueError:
+                parsed = {}
+        if not isinstance(parsed, dict):
+            return ""
+        return str(parsed.get(key) or "").strip()
+
+    @staticmethod
+    def _remember_web_urls(tool_name: str, output: str, state: _WebTurnState) -> None:
+        """Record search result URLs so later web_fetch calls in this turn may use them."""
+        if tool_name != "web_search":
+            return
+        try:
+            payload = json.loads(output)
+        except ValueError:
+            return
+        rows = payload.get("results") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            return
+        for row in rows:
+            if isinstance(row, dict) and isinstance(row.get("url"), str):
+                state.allowed_urls.add(row["url"])
+
+    @staticmethod
+    def _web_citations(records: Sequence[ToolExecutionRecord]) -> list[RetrievedChunk]:
+        """Turn fetched pages into citations so the reader sees where web facts came from."""
+        seen: set[str] = set()
+        citations: list[RetrievedChunk] = []
+        for record in records:
+            if record.tool_name != "web_fetch" or record.status != "success":
+                continue
+            try:
+                page = json.loads(record.output)
+            except ValueError:
+                continue
+            if not isinstance(page, dict):
+                continue
+            url = str(page.get("url") or "").strip()
+            text = str(page.get("text") or "").strip()
+            if not url or not text or url in seen:
+                continue
+            seen.add(url)
+            citations.append(
+                RetrievedChunk(
+                    document_id=url,
+                    document_title=str(page.get("title") or url),
+                    chunk_index=0,
+                    content=text,
+                    semantic_score=0.0,
+                    lexical_score=0.0,
+                    score=0.0,
+                    kind="web",
+                    url=url,
+                    retrieved_at=str(page.get("retrieved_at") or "") or None,
+                )
+            )
+        return citations
 
     async def _execute_and_record_tool(
         self,
@@ -722,6 +927,7 @@ class ChatService:
         citations: Sequence[RetrievedChunk],
         searched: bool = False,
         confidence: ConfidenceLevel = "high",
+        ambiguous: bool = False,
     ) -> list[ChatMessage]:
         # Place stable system + history prefix before dynamic RAG context to enable prompt caching.
         messages: list[ChatMessage] = [
@@ -748,6 +954,10 @@ class ChatService:
         )
         if grounded_block:
             messages.append(ChatMessage(role="system", content=grounded_block))
+
+        # Retrieval flagged two plausible readings; the prompt still caps questions per turn.
+        if ambiguous and (conversation.clarify_streak or 0) < 2:
+            messages.append(ChatMessage(role="system", content=_AMBIGUITY_NUDGE))
 
         messages.append(ChatMessage(role="user", content=current_user_message))
         return messages

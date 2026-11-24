@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from datetime import timedelta
 
+from modules.ai_runtime.envelope import parse_assistant_output
 from modules.conversations.models import Conversation, ConversationMessage
 from modules.conversations.repository import ConversationNotFoundError, ConversationRepository
 from modules.model_gateway.base import LLMProvider
@@ -57,7 +58,8 @@ class ConversationCompactor:
                 temperature=0.0,
             )
         )
-        summary = response.content.strip()
+        # The summarizer is a chat model too: it may wrap its output in the reply envelope.
+        summary = parse_assistant_output(response.content).display_text.strip()
         if not summary:
             return conversation
 

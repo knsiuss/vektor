@@ -1,17 +1,16 @@
 import json
-import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from modules.identity.principal import DEV_PRINCIPAL
 from api.dependencies import get_chat_service_factory, get_embedding_provider
 from api.main import create_app
 from core.config.settings import Settings
 from modules.ai_runtime.service import ChatService
 from modules.conversations.repository import ConversationRepository
+from modules.identity.principal import DEV_PRINCIPAL
 from modules.model_gateway.exceptions import ModelGatewayError
 from modules.model_gateway.schemas import (
     ModelRequest,
@@ -254,7 +253,7 @@ async def test_stream_delivers_model_chunks_as_they_arrive_not_re_sliced() -> No
 
 
 async def test_stream_keeps_preamble_before_a_tool_call_separate_from_the_answer() -> None:
-    """Verify text written before a tool call is shown, and the final answer starts on a new line."""
+    """Verify text before a tool call is shown, and the final answer starts on a new line."""
     provider = _FakeProvider(
         rounds=[_tool_round(preamble="Let me check."), _text("Done: ", "echo:hi")]
     )

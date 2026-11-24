@@ -152,7 +152,7 @@ class OpenAICompatibleProvider:
                 retryable=True,
             ) from exc
 
-        self._raise_for_status(response.status_code)
+        self._raise_for_status(response.status_code, _extract_error_detail(response))
 
         try:
             data = response.json()
@@ -188,7 +188,12 @@ class OpenAICompatibleProvider:
                     headers=headers,
                     timeout=self._timeout_seconds,
                 ) as response:
-                    self._raise_for_status(response.status_code)
+                    if response.status_code >= 400:
+                        await response.aread()
+                        self._raise_for_status(
+                            response.status_code,
+                            _extract_error_detail(response),
+                        )
                     async for chunk in self._iter_sse_lines(response, fallback_model):
                         yield chunk
             else:
@@ -196,7 +201,12 @@ class OpenAICompatibleProvider:
                     httpx.AsyncClient(timeout=self._timeout_seconds) as client,
                     client.stream("POST", url, json=payload, headers=headers) as response,
                 ):
-                    self._raise_for_status(response.status_code)
+                    if response.status_code >= 400:
+                        await response.aread()
+                        self._raise_for_status(
+                            response.status_code,
+                            _extract_error_detail(response),
+                        )
                     async for chunk in self._iter_sse_lines(response, fallback_model):
                         yield chunk
         except httpx.TimeoutException as exc:
@@ -317,20 +327,30 @@ class OpenAICompatibleProvider:
             )
         return deltas
 
-    def _raise_for_status(self, status_code: int) -> None:
+    def _raise_for_status(self, status_code: int, detail: str = "") -> None:
         if status_code in (401, 403):
             raise ProviderAuthenticationError(
                 "Upstream LLM rejected authentication credentials.",
                 provider=self._provider_name,
             )
         if status_code == 429:
+            msg = (
+                f"Upstream LLM rate limit exceeded: {detail}"
+                if detail
+                else "Upstream LLM rate limit exceeded."
+            )
             raise ProviderRateLimitError(
-                "Upstream LLM rate limit exceeded.",
+                msg,
                 provider=self._provider_name,
             )
         if status_code >= 400:
+            msg = (
+                f"Upstream LLM returned HTTP {status_code}: {detail}"
+                if detail
+                else f"Upstream LLM returned HTTP {status_code}."
+            )
             raise ProviderResponseError(
-                f"Upstream LLM returned HTTP {status_code}.",
+                msg,
                 provider=self._provider_name,
                 retryable=status_code >= 500,
             )
@@ -412,6 +432,33 @@ class OpenAICompatibleProvider:
             args_str = raw_args if isinstance(raw_args, str) else json.dumps(raw_args or {})
             parsed.append(ModelToolCall(id=resolved_id, name=name, arguments=args_str))
         return parsed
+
+
+def _extract_error_detail(response: httpx.Response) -> str:
+    detail = ""
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        err = payload.get("error")
+        if isinstance(err, dict):
+            msg = err.get("message")
+            if isinstance(msg, str) and msg.strip():
+                detail = msg.strip()
+        elif isinstance(err, str) and err.strip():
+            detail = err.strip()
+        if not detail:
+            for key in ("message", "detail"):
+                val = payload.get(key)
+                if isinstance(val, str) and val.strip():
+                    detail = val.strip()
+                    break
+    if not detail:
+        text = response.text.strip()
+        if text:
+            detail = text
+    return " ".join(detail.split())[:200]
 
 
 def _parse_usage(raw_usage: dict[str, Any]) -> TokenUsage:

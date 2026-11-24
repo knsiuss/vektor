@@ -3,6 +3,7 @@ from typing import Annotated, cast
 
 import httpx
 from fastapi import Depends, HTTPException, Request, status
+from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.config.settings import Settings
@@ -10,7 +11,6 @@ from modules.ai_runtime.service import ChatService
 from modules.conversations.compaction import ConversationCompactor
 from modules.conversations.repository import ConversationRepository
 from modules.identity.principal import Principal
-from modules.settings.repository import ProviderSettingRepository
 from modules.knowledge.extractors import DocumentExtractor
 from modules.knowledge.repository import KnowledgeRepository
 from modules.model_gateway.embeddings import (
@@ -22,11 +22,18 @@ from modules.model_gateway.embeddings import (
     VoyageEmbeddingProvider,
 )
 from modules.model_gateway.openai_compatible import OpenAICompatibleProvider
+from modules.providers.catalog import resolve_base_url
+from modules.settings.profile_repo import ProviderProfileRepository
+from modules.settings.repository import ProviderSettingRepository
+from modules.skills.registry import SkillRegistry
 from modules.tools.builtins import build_default_tool_registry
+from modules.usage.budget import BudgetExceededError, BudgetRepository
 from modules.usage.metered import MeteredProvider
 from modules.usage.models import KIND_CHAT, KIND_EMBEDDING, KIND_REWRITE, KIND_VISION
 from modules.usage.recorder import UsageRecorder
 from modules.usage.repository import UsageEventRepository
+from modules.usage.schemas import BudgetStatus
+from modules.usage.tracing import Tracer
 
 
 async def get_db_session(request: Request) -> AsyncIterator[AsyncSession]:
@@ -68,6 +75,23 @@ def require_admin(principal: Annotated[Principal, Depends(get_principal)]) -> Pr
             detail="Administrator role required.",
         )
     return principal
+
+
+async def require_budget(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    principal: Annotated[Principal, Depends(get_principal)],
+) -> BudgetStatus:
+    """Reject the request when the tenant has spent this month's whole token budget."""
+    try:
+        return await BudgetRepository(session, principal).ensure_within_budget()
+    except BudgetExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"{exc} Raise the tenant budget or wait until the next month before "
+                "sending more requests."
+            ),
+        ) from exc
 
 
 def get_session_factory(request: Request) -> async_sessionmaker[AsyncSession]:
@@ -212,20 +236,76 @@ def _build_chat_service(
     tool_registry = build_default_tool_registry(
         conversation_repo=repository,
         knowledge_repo=knowledge_repo,
-        session=session,
     )
     usage_repo = UsageEventRepository(session=session, principal=principal)
+    skill_catalog = SkillRegistry(settings.skills_dir).format_catalog_prompt()
+    tracer = Tracer(
+        enabled=settings.langfuse_enabled,
+        public_key=settings.langfuse_public_key,
+        secret_key=(
+            settings.langfuse_secret_key.get_secret_value()
+            if settings.langfuse_secret_key
+            else None
+        ),
+        host=settings.langfuse_host,
+    )
+    app_secret = settings.llm_api_key.get_secret_value() if settings.llm_api_key else "vektor-local"
+    profile_repo = ProviderProfileRepository(session, app_secret=app_secret)
+
+    async def _resolve_provider(profile_id: str | None) -> MeteredProvider | None:
+        record = None
+        if profile_id:
+            record = await profile_repo.get_profile(
+                profile_id=profile_id,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+            )
+        else:
+            from sqlalchemy import select
+            from modules.settings.profile_models import ProviderProfile
+
+            stmt = (
+                select(ProviderProfile)
+                .where(
+                    ProviderProfile.tenant_id == principal.tenant_id,
+                    ProviderProfile.user_id == principal.user_id,
+                    ProviderProfile.is_default.is_(True),
+                )
+                .limit(1)
+            )
+            record = (await session.execute(stmt)).scalar_one_or_none()
+        if record is None:
+            return None
+        raw_key = profile_repo.decrypt_key(record)
+        resolved_url = resolve_base_url(record.provider, record.base_url, settings.llm_base_url)
+        if record.provider == "google" and not record.base_url:
+            resolved_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+        provider_inst = OpenAICompatibleProvider(
+            provider_name=record.provider,
+            api_key=SecretStr(raw_key) if raw_key else settings.llm_api_key,
+            base_url=resolved_url,
+            default_model=record.model,
+            timeout_seconds=settings.llm_timeout_seconds,
+            client=http_client,
+        )
+        return MeteredProvider(provider_inst, recorder, kind=KIND_CHAT)
+
     return ChatService(
         provider=chat_provider,
         repository=repository,
         retriever=retriever,
         tool_registry=tool_registry,
         usage_repo=usage_repo,
+        skill_catalog=skill_catalog,
+        tracer=tracer,
+        provider_resolver=_resolve_provider,
         max_history_messages=settings.agent_max_history_messages,
         max_history_tokens=settings.agent_max_history_tokens,
         max_tool_iterations=settings.agent_max_tool_iterations,
         temperature=settings.llm_chat_temperature,
         stale_days=settings.retrieval_stale_days,
+        web_max_searches=settings.web_max_searches,
+        web_max_fetches=settings.web_max_fetches,
     )
 
 

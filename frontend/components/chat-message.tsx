@@ -239,7 +239,6 @@ function ReasoningTrace({ reasoning, streaming = false }: { reasoning: string; s
 
 function GroundingWarnings({ grounding }: { grounding: GroundingReport }) {
   const hasWarnings =
-    grounding.has_context_without_citations ||
     grounding.invalid_citations.length > 0 ||
     grounding.ungrounded_tokens.length > 0;
   if (!hasWarnings) return null;

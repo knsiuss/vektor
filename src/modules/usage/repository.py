@@ -103,6 +103,10 @@ class UsageEventRepository:
         today = datetime.now(UTC).date()
         window_start = today - timedelta(days=days - 1)
         previous_start = window_start - timedelta(days=days)
+        # Compare timestamps, not formatted strings: Postgres rejects date >= varchar.
+        previous_cutoff = datetime(
+            previous_start.year, previous_start.month, previous_start.day, tzinfo=UTC
+        )
         scope = (
             Conversation.tenant_id == self._principal.tenant_id,
             Conversation.owner_id == self._principal.user_id,
@@ -113,7 +117,7 @@ class UsageEventRepository:
             for row in (
                 await self._session.execute(
                     select(func.date(Conversation.created_at), func.count(Conversation.id))
-                    .where(*scope, func.date(Conversation.created_at) >= previous_start.isoformat())
+                    .where(*scope, Conversation.created_at >= previous_cutoff)
                     .group_by(func.date(Conversation.created_at))
                 )
             ).all()
@@ -128,7 +132,7 @@ class UsageEventRepository:
                 .join(Conversation, Conversation.id == ConversationMessage.conversation_id)
                 .where(
                     *scope,
-                    func.date(ConversationMessage.created_at) >= previous_start.isoformat(),
+                    ConversationMessage.created_at >= previous_cutoff,
                 )
                 .group_by(func.date(ConversationMessage.created_at))
             )

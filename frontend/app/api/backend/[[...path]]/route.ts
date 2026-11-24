@@ -32,6 +32,8 @@ async function forward(
   // OAuth uses the same origin as the app, so the browser cookie must travel both ways.
   const cookie = request.headers.get("cookie");
   if (cookie) headers.set("cookie", cookie);
+  const authorization = request.headers.get("authorization");
+  if (authorization) headers.set("authorization", authorization);
 
   const encodedExtra = request.headers.get("x-vektor-extra-headers");
   if (encodedExtra) {

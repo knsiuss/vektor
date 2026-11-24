@@ -19,7 +19,9 @@ from api.dependencies import (
     get_document_extractor,
     get_embedding_provider,
     get_principal,
+    get_settings,
 )
+from core.config.settings import Settings
 from modules.identity.models import AuditLog
 from modules.identity.principal import Principal
 from modules.knowledge.extractors import DocumentExtractor, UnsupportedDocumentError
@@ -46,7 +48,6 @@ from modules.model_gateway.exceptions import (
 
 router = APIRouter(prefix="/api/v1/knowledge", tags=["knowledge"])
 
-_MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB guard
 
 
 def _get_knowledge_repo(
@@ -118,16 +119,18 @@ async def ingest_text_document(
 async def upload_document_file(
     repo: Annotated[KnowledgeRepository, Depends(_get_knowledge_repo)],
     extractor: Annotated[DocumentExtractor, Depends(get_document_extractor)],
+    settings: Annotated[Settings, Depends(get_settings)],
     file: Annotated[UploadFile, File(...)],
     title: Annotated[str | None, Form()] = None,
 ) -> DocumentSummary:
     """Upload PDF, DOCX, Markdown, Text, or Image files for extraction and indexing."""
     filename = file.filename or "uploaded_document.txt"
     content_bytes = await file.read()
-    if len(content_bytes) > _MAX_UPLOAD_BYTES:
+    limit = settings.max_upload_bytes
+    if limit > 0 and len(content_bytes) > limit:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="File exceeds maximum allowed size of 15 MB.",
+            detail=f"File exceeds the configured limit of {limit // (1024 * 1024)} MB.",
         )
 
     try:

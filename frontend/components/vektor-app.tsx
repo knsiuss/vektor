@@ -43,6 +43,7 @@ import { Composer } from "./composer";
 import { ConfirmDialog } from "./drawer";
 import { Activity, BarChart3, BookOpen, ChevronRight, Cpu, Search, Settings, SidebarToggle, VektorLogo } from "./icons";
 import { KnowledgeView } from "./knowledge-view";
+import { ArtifactPane, type ArtifactItem } from "./artifact-pane";
 import { LoginScreen } from "./login-screen";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { ProfileModal } from "./profile-modal";
@@ -71,11 +72,29 @@ const STARTERS: { title: string; desc: string; query: string; icon: ReactNode }[
 
 type ConversationSummary = { id: string; title: string; updated_at: string };
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+function isLocalPage(): boolean {
+  return typeof window !== "undefined" && LOOPBACK_HOSTS.has(window.location.hostname);
+}
+
+function isLoopbackUrl(value: string): boolean {
+  try {
+    return LOOPBACK_HOSTS.has(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function parseConnection(raw: string | null): Connection {
   try {
     const parsed = JSON.parse(raw ?? "{}") as Record<string, unknown>;
+    const storedBase = typeof parsed.baseUrl === "string" ? parsed.baseUrl : "";
+    // A localhost URL saved on this machine must not follow the user to a deployed host.
+    const baseUrl = !isLocalPage() && isLoopbackUrl(storedBase) ? "" : storedBase;
     return {
-      baseUrl: typeof parsed.baseUrl === "string" && parsed.baseUrl ? parsed.baseUrl : DEFAULT_CONNECTION.baseUrl,
+      // Off-localhost the proxy's own default (VEKTOR_BACKEND_URL) is the only sane target.
+      baseUrl: baseUrl || (isLocalPage() ? DEFAULT_CONNECTION.baseUrl : ""),
       apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : "",
       timeoutSeconds: typeof parsed.timeoutSeconds === "number" ? parsed.timeoutSeconds : DEFAULT_CONNECTION.timeoutSeconds,
       maxRetries: typeof parsed.maxRetries === "number" ? parsed.maxRetries : DEFAULT_CONNECTION.maxRetries,
@@ -142,6 +161,7 @@ export function VektorApp({ initialConversationId }: { initialConversationId?: s
 
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(initialConversationId ?? null);
+  const [activeArtifact, setActiveArtifact] = useState<ArtifactItem | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -660,6 +680,22 @@ export function VektorApp({ initialConversationId }: { initialConversationId?: s
     [activeId, connection],
   );
 
+  useEffect(() => {
+    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant" && m.content);
+    if (!lastAssistant?.content) return;
+    const match = /```html\s*([\s\S]*?)```/i.exec(lastAssistant.content);
+    if (match?.[1]) {
+      setActiveArtifact({
+        id: `html-${lastAssistant.id}`,
+        type: "html_app",
+        title: "HTML Preview",
+        status: "ready",
+        version: 1,
+        source: { html: match[1].trim() },
+      });
+    }
+  }, [messages]);
+
   if (authState === "required") {
     return <LoginScreen connection={connection} reason={authReason} />;
   }
@@ -923,6 +959,14 @@ export function VektorApp({ initialConversationId }: { initialConversationId?: s
           </div>
         )}
       </main>
+
+      {activeArtifact && (
+        <ArtifactPane
+          artifact={activeArtifact}
+          versions={[activeArtifact.version]}
+          onClose={() => setActiveArtifact(null)}
+        />
+      )}
 
       {profileOpen && (
         <ProfileModal

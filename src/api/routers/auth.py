@@ -1,6 +1,7 @@
 """Browser login endpoints: Google and GitHub via OAuth, plus session status."""
 
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import RedirectResponse
@@ -46,6 +47,29 @@ def _credentials(settings: Settings, provider: str) -> tuple[str, str]:
     return client_id, secret.get_secret_value()
 
 
+def _allowed_origins(settings: Settings) -> set[str]:
+    """Origins allowed to receive the OAuth callback; blocks open redirects."""
+    configured = [settings.public_frontend_url, *settings.cors_origins.split(",")]
+    origins = {origin.strip().rstrip("/") for origin in configured if origin.strip()}
+    if settings.app_env == "development":
+        origins.update({"http://localhost:3000", "http://127.0.0.1:3000"})
+    return origins
+
+
+def _request_origin(request: Request, settings: Settings) -> str:
+    """Prefer the browser's own origin so localhost stays localhost."""
+    candidates = [request.headers.get("origin", ""), request.headers.get("referer", "")]
+    allowed = _allowed_origins(settings)
+    for candidate in candidates:
+        if not candidate:
+            continue
+        parsed = urlsplit(candidate)
+        origin = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+        if origin in allowed:
+            return origin
+    return settings.public_frontend_url.rstrip("/")
+
+
 def _session_secret(settings: Settings) -> str:
     if settings.auth_session_secret is not None:
         return settings.auth_session_secret.get_secret_value()
@@ -67,16 +91,18 @@ async def list_providers(settings: Annotated[Settings, Depends(get_settings)]) -
 @router.get("/{provider}/start")
 async def start_login(
     provider: str,
+    request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> Response:
-    """Redirect the browser to the provider's consent screen."""
+    """Redirect the browser to the provider's consent screen, returning to its own origin."""
     name = _provider(provider)
     client_id, _ = _credentials(settings, name)
-    state = sign_state(name, _session_secret(settings))
+    origin = _request_origin(request, settings)
+    state = sign_state(name, _session_secret(settings), origin=origin)
     url = build_authorize_url(
         name,
         client_id=client_id,
-        public_frontend_url=settings.public_frontend_url,
+        public_frontend_url=origin,
         state=state,
     )
     response = RedirectResponse(url, status_code=status.HTTP_302_FOUND)
@@ -109,10 +135,14 @@ async def login_callback(
         return RedirectResponse(home, status_code=status.HTTP_302_FOUND)
 
     cookie_state = request.cookies.get(STATE_COOKIE)
+    origin = settings.public_frontend_url.rstrip("/")
     try:
-        verify_state(state, name, _session_secret(settings))
+        payload = verify_state(state, name, _session_secret(settings))
         if cookie_state and not _same(state, cookie_state):
             raise OAuthError("Login state does not match this browser.")
+        state_origin = payload.get("o")
+        if isinstance(state_origin, str) and state_origin.rstrip("/") in _allowed_origins(settings):
+            origin = state_origin.rstrip("/")
     except OAuthError:
         return RedirectResponse(home, status_code=status.HTTP_302_FOUND)
 
@@ -123,7 +153,7 @@ async def login_callback(
             code=code,
             client_id=client_id,
             client_secret=client_secret,
-            public_frontend_url=settings.public_frontend_url,
+            public_frontend_url=origin,
         )
     except OAuthError:
         return RedirectResponse(home, status_code=status.HTTP_302_FOUND)
@@ -132,10 +162,7 @@ async def login_callback(
     account = await repo.upsert_account(profile)
     raw_session = await repo.create_session(account, days=settings.auth_session_days)
 
-    response = RedirectResponse(
-        f"{settings.public_frontend_url.rstrip('/')}/",
-        status_code=status.HTTP_302_FOUND,
-    )
+    response = RedirectResponse(f"{origin}/", status_code=status.HTTP_302_FOUND)
     response.set_cookie(
         SESSION_COOKIE,
         raw_session,

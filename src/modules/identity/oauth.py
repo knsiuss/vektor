@@ -178,10 +178,18 @@ def _config(provider: str) -> ProviderConfig:
     return config
 
 
-def sign_state(provider: str, secret: str, *, now: float | None = None) -> str:
-    """Return a tamper-proof state token carrying the provider and an expiry."""
+def sign_state(
+    provider: str,
+    secret: str,
+    *,
+    origin: str = "",
+    now: float | None = None,
+) -> str:
+    """Return a tamper-proof state token carrying the provider, the return origin, and an expiry."""
     issued = int(now if now is not None else time.time())
-    payload = json.dumps({"p": provider, "n": secrets.token_urlsafe(12), "t": issued})
+    payload = json.dumps(
+        {"p": provider, "n": secrets.token_urlsafe(12), "t": issued, "o": origin}
+    )
     encoded = base64.urlsafe_b64encode(payload.encode()).decode()
     signature = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).hexdigest()
     return f"{encoded}.{signature}"
@@ -189,8 +197,8 @@ def sign_state(provider: str, secret: str, *, now: float | None = None) -> str:
 
 def verify_state(
     state: str, expected_provider: str, secret: str, *, now: float | None = None
-) -> None:
-    """Raise OAuthError unless the state is authentic, fresh, and for the expected provider."""
+) -> dict:
+    """Validate the state and return its payload (provider, origin, issued-at)."""
     encoded, _, signature = state.partition(".")
     if not encoded or not signature:
         raise OAuthError("Missing login state.")
@@ -207,3 +215,4 @@ def verify_state(
     current = now if now is not None else time.time()
     if not isinstance(issued, (int, float)) or current - issued > STATE_TTL_SECONDS:
         raise OAuthError("Login state has expired.")
+    return payload

@@ -38,3 +38,12 @@ def test_state_signed_with_a_different_secret_is_rejected() -> None:
 
     with pytest.raises(OAuthError):
         verify_state(state, "google", SECRET, now=1001)
+
+
+def test_state_carries_the_return_origin() -> None:
+    """The callback must know which frontend origin started the flow."""
+    state = sign_state("google", SECRET, origin="http://localhost:3000", now=1000)
+
+    payload = verify_state(state, "google", SECRET, now=1001)
+
+    assert payload["o"] == "http://localhost:3000"

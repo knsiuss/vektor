@@ -112,7 +112,8 @@ async def start_login(
         max_age=600,
         httponly=True,
         samesite="lax",
-        secure=settings.public_frontend_url.startswith("https://"),
+        # A Secure cookie is dropped on http://localhost, so follow the chosen origin.
+        secure=origin.startswith("https://"),
         path="/",
     )
     return response
@@ -169,7 +170,7 @@ async def login_callback(
         max_age=settings.auth_session_days * 86_400,
         httponly=True,
         samesite="lax",
-        secure=settings.public_frontend_url.startswith("https://"),
+        secure=origin.startswith("https://"),
         path="/",
     )
     response.delete_cookie(STATE_COOKIE, path="/")

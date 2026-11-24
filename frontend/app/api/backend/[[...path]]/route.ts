@@ -49,6 +49,12 @@ async function forward(
   // OAuth uses the same origin as the app, so the browser cookie must travel both ways.
   const cookie = request.headers.get("cookie");
   if (cookie) headers.set("cookie", cookie);
+
+  // The backend picks the OAuth return origin from these; the allowlist is enforced there.
+  for (const name of ["origin", "referer"]) {
+    const value = request.headers.get(name);
+    if (value) headers.set(name, value);
+  }
   const authorization = request.headers.get("authorization");
   if (authorization) headers.set("authorization", authorization);
 

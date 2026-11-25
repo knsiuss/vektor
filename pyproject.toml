@@ -7,8 +7,8 @@ name = "vektor"
 version = "0.1.0"
 description = "Vektor — Modular, security-first AI Operations platform."
 readme = "README.md"
-license = "Apache-2.0"
-license-files = ["LICENSE", "NOTICE"]
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.20",

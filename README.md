@@ -174,6 +174,6 @@ Issues and pull requests are welcome. Please run the test, lint, and type checks
 
 ## License
 
-Vektor is released under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE) for attribution.
+Vektor is released under the [MIT License](LICENSE).
 
 Unless you explicitly state otherwise, any contribution you intentionally submit for inclusion in this project is licensed under the same terms, without any additional conditions.
